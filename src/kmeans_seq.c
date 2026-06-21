@@ -15,6 +15,11 @@
  * points), identical to the MPI version, so the two are directly comparable.
  */
 
+/* clock_gettime / CLOCK_MONOTONIC require POSIX.1-2008 to be requested before
+ * any header is included. macOS exposes them without this, but strict -std=c11
+ * on Linux glibc hides them unless this feature-test macro is set first. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "common.h"
 #include <time.h>
 

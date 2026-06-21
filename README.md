@@ -28,6 +28,9 @@ scripts/bootstrap_node.sh     one-shot Ubuntu cluster-node setup (SSH + OpenMPI)
 
 plots/make_plots.py           CSVs -> all report figures (PNG)
 
+docker/Dockerfile             x86-64 Ubuntu image mirroring the cluster toolchain
+docker/run.sh                 build/shell/make/verify wrapper (handles --platform)
+
 docs/CLUSTER_SETUP.md         set up any new machine fast (Windows host -> Ubuntu VM)
 docs/RUNBOOK.md               exact commands to reproduce every result + figure
 docs/REPORT_OUTLINE.md        10-20 pg report scaffold mapped to each experiment
@@ -52,6 +55,28 @@ open results/fig_speedup.png      # Linux: xdg-open
 
 `verify_correctness.sh` should print `PASS: … bit-identical …`. That confirms the
 build and the algorithm before you touch the cluster.
+
+## Matching the cluster on a Mac (x86-64 Ubuntu in Docker)
+
+The cluster nodes are **x86-64 Ubuntu**. An Apple-Silicon Mac is ARM, so binaries
+built natively there won't match the cluster and some code compiles differently
+(e.g. POSIX feature-test macros). To develop against an environment that's
+byte-compatible with the cluster, use the bundled x86-64 Ubuntu image:
+
+```bash
+docker/run.sh build               # one time: build the x86-64 Ubuntu image
+docker/run.sh verify              # build + correctness check inside Linux x86-64
+docker/run.sh make                # just compile the Linux binaries
+docker/run.sh shell               # interactive Ubuntu shell at /work
+docker/run.sh run -- mpirun -np 4 ./bin/kmeans_mpi data/verify.bin 8 100 1e-8
+```
+
+The repo is bind-mounted, so host edits are live in the container. This is the
+right place to confirm the **Linux build and correctness** before pushing.
+
+> On Apple Silicon this image runs under emulation (QEMU). It's faithful for
+> compilation and correctness but **not** for timing — the speedup/granularity
+> numbers in the report must come from real x86 cluster hardware, not Docker.
 
 ## Running on the real cluster
 
