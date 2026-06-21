@@ -32,6 +32,8 @@ docker/Dockerfile             x86-64 Ubuntu image mirroring the cluster toolchai
 docker/run.sh                 build/shell/make/verify wrapper (handles --platform)
 
 docs/CLUSTER_SETUP.md         set up any new machine fast (Windows host -> Ubuntu VM)
+docs/WSL_SETUP.md             WSL2 Ubuntu cluster + Mac driver (staged, with networking)
+docs/REMOTE_ACCESS.md         Tailscale mesh for teammates on different networks
 docs/RUNBOOK.md               exact commands to reproduce every result + figure
 docs/REPORT_OUTLINE.md        10-20 pg report scaffold mapped to each experiment
 ```

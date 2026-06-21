@@ -17,7 +17,10 @@
 set -euo pipefail
 
 ROLE="${ROLE:-node}"
-MPI_PKG="${MPI_PKG:-mpich}"     # set MPI_PKG="libopenmpi-dev openmpi-bin" for OpenMPI
+# OpenMPI by default to match the Docker image and README. Every node in one
+# cluster MUST use the SAME implementation — do not mix OpenMPI and MPICH.
+# Set MPI_PKG="mpich" to switch the whole cluster to MPICH instead.
+MPI_PKG="${MPI_PKG:-libopenmpi-dev openmpi-bin}"
 
 echo "==> Bootstrapping this VM as: $ROLE"
 
