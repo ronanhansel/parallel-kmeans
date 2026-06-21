@@ -73,10 +73,10 @@ than the `mpirun` launching it (stale binary after switching MPI impls). Fix:
 ## 3. Current repo state
 
 - Remote: `https://github.com/ronanhansel/parallel-kmeans.git`, branch `main`.
-- Last pushed commit: `eb4050c` (OpenMPI defaults, WSL/remote docs).
-- Local working tree (as of this handoff): Dockerfile + bootstrap_node.sh
-  reverted to OpenMPI; a stray `hostfile` (`vinh@172.20.10.2 slots=4`) exists from
-  WSL testing — **delete or overwrite it** when building the real cluster hostfile.
+- Last pushed commit: `1d7fa9d` (OpenMPI reverts of Dockerfile + bootstrap_node.sh,
+  plus this handoff doc). Working tree is clean / fully pushed.
+- The stray `hostfile` from WSL testing (`vinh@172.20.10.2 slots=4`) was removed;
+  build the real cluster hostfile fresh when nodes are up.
 - **Verified working:** correctness (parallel == sequential, bit-identical) and
   the full scaling→plot pipeline, both on the Mac's x86 Docker env. The algorithm
   is sound; only real-hardware data collection remains.
