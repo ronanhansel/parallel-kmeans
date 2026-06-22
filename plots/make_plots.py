@@ -45,18 +45,44 @@ def plot_size_sweep(results_dir):
     comm = [float(r["comm_s"]) for r in rows]
     compute = [w - c for w, c in zip(wall, comm)]
 
+    # Log-log axes. The measured runtimes here span ~0.1-40 s, three orders of
+    # magnitude below the literal 2-3 min target; on a linear axis with the band
+    # drawn at 120-180 s the real curve is crushed flat against zero. Log-log
+    # keeps the near-linear O(M) growth readable AND lets us show where the band
+    # would be reached by extrapolation, which is the honest way to present a
+    # single-host measurement whose absolute times the cluster will dwarf.
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(M, wall, "o-", label="total wall time (with comm)")
     ax.plot(M, compute, "s--", label="compute only (without comm)")
-    ax.axhspan(120, 180, color="green", alpha=0.12, label="target 2-3 min band")
-    ax.set_xlabel("input size M (points)")
-    ax.set_ylabel("runtime (s)")
-    ax.set_title("Runtime vs input size — choose N inside the 2-3 min band")
-    ax.grid(True, alpha=0.3)
+    ax.set_xscale("log"); ax.set_yscale("log")
+
+    # Extrapolate the wall-time trend (a near-linear power law in M) to mark the
+    # M at which this host would enter the 2-3 min band, instead of pretending
+    # the band sits among the measured points.
+    note = ""
+    if len(M) >= 2:
+        import math
+        lm = [math.log(x) for x in M]; lw = [math.log(x) for x in wall]
+        n = len(M); sx = sum(lm); sy = sum(lw)
+        sxx = sum(x * x for x in lm); sxy = sum(x * y for x, y in zip(lm, lw))
+        slope = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+        inter = (sy - slope * sx) / n
+        m_at = lambda secs: math.exp((math.log(secs) - inter) / slope)
+        m_lo, m_hi = m_at(120), m_at(180)
+        ax.axhspan(120, 180, color="green", alpha=0.12,
+                   label="target 2-3 min band (extrapolated)")
+        ax.axvspan(m_lo, m_hi, color="green", alpha=0.07)
+        note = (f" — on this host the band is reached near "
+                f"M≈{m_lo/1e6:.0f}-{m_hi/1e6:.0f}M points (extrapolated)")
+
+    ax.set_xlabel("input size M (points, log scale)")
+    ax.set_ylabel("runtime (s, log scale)")
+    ax.set_title("Runtime vs input size (single host; band extrapolated)")
+    ax.grid(True, which="both", alpha=0.3)
     ax.legend()
     out = os.path.join(results_dir, "fig_size_sweep.png")
     fig.tight_layout(); fig.savefig(out, dpi=130); plt.close(fig)
-    return f"wrote {out}"
+    return f"wrote {out}{note}"
 
 
 def plot_granularity(results_dir):
@@ -146,6 +172,56 @@ def plot_speedup(results_dir):
     return f"wrote {out}"
 
 
+def plot_efficiency(results_dir):
+    rows, err = _load_scaling(results_dir)
+    if rows is None:
+        return f"skip efficiency: {err}"
+    P = [int(r["P"]) for r in rows]
+    eff_w = [float(r["speedup_wall"]) / p for r, p in zip(rows, P)]
+    eff_c = [float(r["speedup_compute"]) / p for r, p in zip(rows, P)]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.axhline(1.0, color="k", ls=":", label="ideal efficiency = 1")
+    ax.plot(P, eff_w, "o-", label="efficiency (with comm)")
+    ax.plot(P, eff_c, "s--", label="efficiency (compute only)")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(P); ax.set_xticklabels([str(p) for p in P])
+    ax.set_ylim(0, 1.1)
+    ax.set_xlabel("number of processes P")
+    ax.set_ylabel("parallel efficiency $E_P = S_P / P$")
+    ax.set_title("Parallel efficiency vs process count at data scale 2N")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    out = os.path.join(results_dir, "fig_efficiency.png")
+    fig.tight_layout(); fig.savefig(out, dpi=130); plt.close(fig)
+    return f"wrote {out}"
+
+
+def plot_comm_fraction(results_dir):
+    rows, err = _load_scaling(results_dir)
+    if rows is None:
+        return f"skip comm_fraction: {err}"
+    P = [int(r["P"]) for r in rows]
+    wall = [float(r["wall_s"]) for r in rows]
+    comm = [float(r["comm_s"]) for r in rows]
+    frac = [100.0 * c / w if w > 0 else 0.0 for c, w in zip(comm, wall)]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(P, frac, "o-", color="#e08a1e")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(P); ax.set_xticklabels([str(p) for p in P])
+    ax.set_xlabel("number of processes P")
+    ax.set_ylabel("communication share of wall time (%)")
+    ax.set_title("Communication fraction vs process count at data scale 2N")
+    ax.grid(True, alpha=0.3)
+    for p, f in zip(P, frac):
+        ax.annotate(f"{f:.1f}%", (p, f), textcoords="offset points",
+                    xytext=(0, 8), ha="center", fontsize=9)
+    out = os.path.join(results_dir, "fig_comm_fraction.png")
+    fig.tight_layout(); fig.savefig(out, dpi=130); plt.close(fig)
+    return f"wrote {out}"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Render report figures from results CSVs.")
     ap.add_argument("--results-dir", default="results", help="directory holding the CSVs")
@@ -155,7 +231,8 @@ def main():
         print(f"error: results dir '{args.results_dir}' does not exist", file=sys.stderr)
         return 1
 
-    for fn in (plot_size_sweep, plot_granularity, plot_runtime, plot_speedup):
+    for fn in (plot_size_sweep, plot_granularity, plot_runtime, plot_speedup,
+               plot_efficiency, plot_comm_fraction):
         print("[plots]", fn(args.results_dir))
     return 0
 

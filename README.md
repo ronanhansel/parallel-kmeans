@@ -26,10 +26,14 @@ scripts/run_granularity.sh    per-rank compute/comm timing + 25% load verdict
 scripts/run_scaling.sh        speedup ladder 1,2,4,8,... at data scale 2N
 scripts/bootstrap_node.sh     one-shot Ubuntu cluster-node setup (SSH + OpenMPI)
 
-plots/make_plots.py           CSVs -> all report figures (PNG)
+plots/make_plots.py           CSVs -> all 6 report figures (PNG): size sweep,
+                              granularity, runtime, speedup, efficiency,
+                              comm-fraction
 
 docker/Dockerfile             x86-64 Ubuntu image mirroring the cluster toolchain
 docker/run.sh                 build/shell/make/verify wrapper (handles --platform)
+docker/compose/               3-node Docker "cluster": proves the distributed
+                              mpirun --hostfile path + captures topology evidence
 
 docs/CLUSTER_SETUP.md         set up any new machine fast (Windows host -> Ubuntu VM)
 docs/WSL_SETUP.md             WSL2 Ubuntu cluster + Mac driver (staged, with networking)
@@ -80,6 +84,33 @@ right place to confirm the **Linux build and correctness** before pushing.
 > compilation and correctness but **not** for timing — the speedup/granularity
 > numbers in the report must come from real x86 cluster hardware, not Docker.
 
+## Proving the distributed path (3-node Docker compose)
+
+`docker/compose/` brings up three containers — `node1`, `node2`, `node3` — each
+with its own hostname and a static IP on a private bridge network, sharing one
+SSH key so `mpirun` on the head node launches ranks on the others over SSH+TCP.
+This rehearses the **exact** `mpirun --hostfile` path the real cluster uses, and
+produces the two artifacts the report's cluster section needs: the per-node
+`hostname` topology proof and a distributed correctness PASS across all 3 nodes.
+
+```bash
+docker compose -f docker/compose/docker-compose.yml up -d --build
+# run the demo as the unprivileged 'mpi' user (SSH keys belong to it;
+# OpenMPI refuses to run as root)
+docker compose -f docker/compose/docker-compose.yml exec -u mpi node1 \
+    bash docker/compose/demo.sh
+docker compose -f docker/compose/docker-compose.yml down
+```
+
+The demo writes `results/cluster_hostname.txt` (4 ranks each on node1/node2/node3)
+and prints `PASS: 20000 points, partitions identical up to relabeling`.
+
+> **Not a timing environment** — the three containers share this host's cores, so
+> adding "nodes" is just oversubscription. Use it for the distributed-path and
+> topology proof only; the speedup/granularity numbers come from native runs.
+> The demo builds into `bin-linux/` (override `make BIN=...`) so the container's
+> Linux binaries never collide with the host's native `bin/`.
+
 ## Running on the real cluster
 
 1. On **every** node, follow [`docs/CLUSTER_SETUP.md`](docs/CLUSTER_SETUP.md) —
@@ -106,6 +137,51 @@ right place to confirm the **Linux build and correctness** before pushing.
    HOSTFILE=hostfile MAXP=12 N=<chosen> scripts/run_scaling.sh
    python3 plots/make_plots.py
    ```
+
+## Reproducing the report figures
+
+The report (`report/pdmain.tex`) was built from these exact operating points on a
+10-core machine (8 performance + 2 efficiency cores). To regenerate the same
+figures:
+
+```bash
+# 1. Correctness (small dataset, P=4)
+scripts/verify_correctness.sh
+
+# 2. Size sweep — 100k to 12.8M points at P=8 (performance cores)
+P=8 SIZES="100000 200000 400000 800000 1600000 3200000 6400000 12800000" \
+  scripts/run_size_sweep.sh
+
+# 3. Granularity at the operating size N=6.4M, P=8
+N=6400000 P=8 scripts/run_granularity.sh
+
+# 4. Speedup ladder 1,2,4,8 at data scale 2N=12.8M
+N=6400000 MAXP=8 scripts/run_scaling.sh
+
+# 5. Render all 6 figures, then copy into the report
+python3 plots/make_plots.py
+cp results/fig_*.png report/figures/
+```
+
+**Why the ladder caps at P=8, not 10.** This machine has 8 performance + 2
+efficiency cores. At P=10 two ranks land on the slower E-cores, and because the
+per-iteration `Allreduce` is a hard barrier, all ranks wait on those two
+stragglers — wall time *rises* at P=10. That's a heterogeneous-core artifact, not
+an algorithm limit, so the reported ladder stops at the 8 uniform P-cores. A
+homogeneous cluster of identical cores has no such split and extends the ladder
+to its full core count.
+
+**Operating sizes.** N=6.4M points (~3.3 s at P=8) for load balance; 2N=12.8M for
+speedup. The literal 2–3 min target band is only reached near M≈450–725M points
+(extrapolated) — far beyond a single machine's RAM — so the size-sweep figure
+marks that band by extrapolation and the cluster reports the literal operating
+point on its own aggregate hardware.
+
+**Figures (6 total)** rendered by `plots/make_plots.py` into `results/`:
+`fig_size_sweep`, `fig_granularity`, `fig_runtime`, `fig_speedup`,
+`fig_efficiency`, `fig_comm_fraction`. Last regenerated values: load-balance
+spread ~5.2% (PASS); speedup at P=8 is 6.55× (with comm) / 7.25× (compute only);
+efficiency falls 100%→82%; comm-fraction climbs 0.3%→12.1%.
 
 ## Design at a glance
 

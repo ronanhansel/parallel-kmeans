@@ -12,7 +12,9 @@ MPICC   ?= mpicc
 CFLAGS  ?= -O3 -Wall -Wextra -std=c11
 LDLIBS  ?= -lm
 
-BIN     := bin
+# Overridable so an alien-arch build (e.g. the Linux Docker demo on an ARM Mac)
+# can target its own dir and not collide with the host's native bin/.
+BIN     ?= bin
 TARGETS := $(BIN)/kmeans_mpi $(BIN)/kmeans_seq
 
 .PHONY: all clean

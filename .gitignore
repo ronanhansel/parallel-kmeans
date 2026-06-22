@@ -3,6 +3,7 @@
 kmeans_mpi
 kmeans_seq
 bin/
+bin-linux/
 
 # Generated datasets (regenerate with scripts/gen_dataset.py)
 data/*.bin
