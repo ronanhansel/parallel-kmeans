@@ -17,12 +17,36 @@ SSH_USER="${CLUSTER_USER:+${CLUSTER_USER}@}"
 _self_id="$( { hostname; hostname -s; hostname -f; hostname -I; } 2>/dev/null \
     | tr ' ' '\n' | grep -v '^$' | sort -u )"
 
-# is_local <host> : true if <host> names the machine we're running on.
+# _resolve <host> : print the IPv4 addresses <host> resolves to, one per line
+# (empty if it can't be resolved). Tries getent (Linux) then a Python fallback
+# so an /etc/hosts alias like 'node0' -> the master's LAN IP is detected.
+_resolve() {
+    if command -v getent >/dev/null 2>&1; then
+        getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u
+    else
+        python3 - "$1" 2>/dev/null <<'PY' || true
+import socket, sys
+try:
+    print("\n".join(sorted({ai[4][0] for ai in socket.getaddrinfo(sys.argv[1], None, socket.AF_INET)})))
+except OSError:
+    pass
+PY
+    fi
+}
+
+# is_local <host> : true if <host> names the machine we're running on. Matches by
+# literal name/IP first, then by resolving <host> to an IP and checking it
+# against this machine's IPs — so an alias that points at the master is caught.
 is_local() {
     case "$1" in
         localhost|127.0.0.1|"$(hostname)") return 0 ;;
     esac
-    grep -qxF "$1" <<<"$_self_id"
+    grep -qxF "$1" <<<"$_self_id" && return 0
+    local ip
+    while IFS= read -r ip; do
+        [[ -n "$ip" ]] && grep -qxF "$ip" <<<"$_self_id" && return 0
+    done < <(_resolve "$1")
+    return 1
 }
 
 # run_on <host> <command-string> : run the command on <host>. Local exec for the
