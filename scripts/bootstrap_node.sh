@@ -31,7 +31,11 @@ fi
 
 echo "==> [1/5] Updating apt and installing packages"
 sudo apt update
-sudo apt install -y net-tools openssh-server openssh-client make gcc $MPI_PKG
+# python3-numpy + python3-matplotlib are needed on the master to generate
+# datasets (gen_dataset.py) and render figures (make_plots.py). Installing them
+# on every node is harmless and keeps any node usable as the launcher.
+sudo apt install -y net-tools openssh-server openssh-client make gcc $MPI_PKG \
+    python3 python3-numpy python3-matplotlib
 
 echo "==> [2/5] Ensuring SSH server is running"
 sudo systemctl enable --now ssh 2>/dev/null || sudo service ssh start || true

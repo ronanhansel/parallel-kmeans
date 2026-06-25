@@ -70,6 +70,16 @@ run_on() {
     fi
 }
 
+# master_token : the name to write into the hostfile for the master (rank 0).
+# We use this machine's real hostname, NOT whatever alias the caller passed
+# (e.g. 'node0'). OpenMPI does its OWN locality check on each hostfile entry: if
+# the name resolves to one of its local interfaces it forks the rank instead of
+# SSHing. An /etc/hosts alias that points at a wrong/placeholder IP defeats that
+# and makes OpenMPI try to SSH to itself; the real hostname never does.
+master_token() {
+    hostname
+}
+
 # hosts_from_hostfile <path> : print the host token (first field) of each real
 # entry, one per line. Skips comments and blank lines.
 hosts_from_hostfile() {

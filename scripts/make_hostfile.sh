@@ -47,9 +47,18 @@ for host in "$@"; do
             fi
             rm -f "$OUT.tmp"; exit 1; }
     fi
-    echo "$host slots=$slots" >> "$OUT.tmp"
+    # For the master, write its REAL hostname (not the user's alias). OpenMPI
+    # matches the hostfile entry against its own hostname to decide locality; an
+    # alias like 'node0' that /etc/hosts maps to some other IP makes OpenMPI
+    # think the master is remote and SSH to itself (stale host key, hang). The
+    # canonical hostname is always recognised as local -> rank 0 is forked.
+    write_name="$host"
+    if is_local "$host"; then
+        write_name="$(hostname)"
+    fi
+    echo "$write_name slots=$slots" >> "$OUT.tmp"
     total=$(( total + slots ))
-    printf "[hostfile] %-22s slots=%s%s\n" "$host" "$slots" \
+    printf "[hostfile] %-22s slots=%s%s\n" "$write_name" "$slots" \
         "$(is_local "$host" && echo '  (master, rank 0, local)')"
 done
 mv "$OUT.tmp" "$OUT"
