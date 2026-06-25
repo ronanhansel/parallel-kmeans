@@ -14,18 +14,78 @@ Coordinates are float64 so the C programs read bit-identical inputs and the
 sequential-vs-parallel correctness comparison stays exact.
 
 Usage:
-    python3 gen_dataset.py --M 200000 --dim 16 --K 8 --out data/train.bin
+    python3 gen_dataset.py --points 200000 --dim 16 --clusters 8 --out data/train.bin
     python3 gen_dataset.py --M 200000 --dim 16 --K 8 --seed 42 --spread 1.5 \
             --out data/train.bin
 
 The blobs are well separated by default (spread 1.0) so K-means converges to a
 clear solution, which makes the correctness assertion meaningful.
+
+numpy is used when available (fast path for the multi-million-point experiment
+datasets). If numpy is NOT installed the script transparently falls back to a
+pure-stdlib generator so the cluster smoke tests and correctness checks still
+run on a bare node — no extra packages required. The fallback is slower, so for
+the large experiment sizes installing numpy is recommended
+(`sudo apt install -y python3-numpy`).
 """
 import argparse
 import struct
 import sys
 
-import numpy as np
+try:
+    import numpy as np
+    HAVE_NUMPY = True
+except ImportError:
+    HAVE_NUMPY = False
+
+
+def _gen_numpy(M, dim, K, seed, spread, box):
+    """Fast path: vectorised Gaussian blobs via numpy."""
+    rng = np.random.default_rng(seed)
+    centers = rng.uniform(-box, box, size=(K, dim))
+    # Even cluster sizes, then shuffle so rows are not pre-sorted by cluster
+    # (a sorted layout would make the 1D block decomposition trivially balanced
+    # in a misleading way).
+    labels = np.tile(np.arange(K), M // K + 1)[:M]
+    rng.shuffle(labels)
+    data = centers[labels] + rng.normal(0.0, spread, size=(M, dim))
+    return data.astype("<f8").tobytes(), labels.astype("<i4").tobytes()
+
+
+def _gen_stdlib(M, dim, K, seed, spread, box):
+    """Fallback path: same construction with the standard library only.
+
+    Produces the identical binary layout (different RNG, so different exact
+    values than the numpy path, but a statistically equivalent dataset). Used
+    when numpy is unavailable so a bare node can still run the smoke/correctness
+    checks. Packs into array('d')/array('i') for speed without numpy.
+    """
+    import random
+    from array import array
+
+    rnd = random.Random(seed)
+    centers = [[rnd.uniform(-box, box) for _ in range(dim)] for _ in range(K)]
+
+    labels_list = [i % K for i in range(M)]
+    rnd.shuffle(labels_list)
+
+    data = array("d", bytes(8 * M * dim))   # zero-filled, then overwrite
+    idx = 0
+    gauss = rnd.gauss
+    for i in range(M):
+        c = centers[labels_list[i]]
+        for d in range(dim):
+            data[idx] = c[d] + gauss(0.0, spread)
+            idx += 1
+
+    labels = array("i", labels_list)
+
+    # Force little-endian on big-endian hosts (no-op on x86/ARM little-endian).
+    if sys.byteorder != "little":
+        data.byteswap()
+        labels.byteswap()
+
+    return data.tobytes(), labels.tobytes()
 
 
 def main() -> int:
@@ -49,29 +109,30 @@ def main() -> int:
         print(f"error: need 0 < K <= M (got K={args.K}, M={args.M})", file=sys.stderr)
         return 1
 
-    rng = np.random.default_rng(args.seed)
-
-    # True cluster centers, well spread across the box.
-    centers = rng.uniform(-args.box, args.box, size=(args.K, args.dim))
-
-    # Assign each point to a cluster as evenly as possible, then shuffle so the
-    # rows are not pre-sorted by cluster (a sorted layout would make the 1D
-    # block decomposition trivially load-balanced in a misleading way).
-    labels = np.tile(np.arange(args.K), args.M // args.K + 1)[: args.M]
-    rng.shuffle(labels)
-
-    data = centers[labels] + rng.normal(0.0, args.spread, size=(args.M, args.dim))
-    data = data.astype("<f8")            # little-endian float64
-    labels = labels.astype("<i4")        # little-endian int32
+    if HAVE_NUMPY:
+        data_bytes, label_bytes = _gen_numpy(
+            args.M, args.dim, args.K, args.seed, args.spread, args.box)
+        backend = "numpy"
+    else:
+        # Warn when the slow path meets a large dataset so the user can install
+        # numpy instead of waiting (the experiment sizes are millions of points).
+        if args.M * args.dim > 2_000_000:
+            print(f"[gen] numpy not found; using the pure-Python fallback for "
+                  f"M={args.M} dim={args.dim}. This is slow at this size — "
+                  f"`sudo apt install -y python3-numpy` for the fast path.",
+                  file=sys.stderr)
+        data_bytes, label_bytes = _gen_stdlib(
+            args.M, args.dim, args.K, args.seed, args.spread, args.box)
+        backend = "stdlib"
 
     with open(args.out, "wb") as f:
         f.write(struct.pack("<3i", args.M, args.dim, args.K))
-        f.write(data.tobytes())
-        f.write(labels.tobytes())
+        f.write(data_bytes)
+        f.write(label_bytes)
 
-    mb = (12 + data.nbytes + labels.nbytes) / 1e6
+    mb = (12 + len(data_bytes) + len(label_bytes)) / 1e6
     print(f"wrote {args.out}: M={args.M} dim={args.dim} K={args.K} "
-          f"({mb:.1f} MB, seed={args.seed}, spread={args.spread})")
+          f"({mb:.1f} MB, seed={args.seed}, spread={args.spread}, backend={backend})")
     return 0
 
 

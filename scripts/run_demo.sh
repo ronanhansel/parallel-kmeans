@@ -122,8 +122,17 @@ say "6/7  speedup ladder 1,2,4,... up to $TOTAL at 2N"
 N="$N" MAXP="$TOTAL" scripts/run_scaling.sh
 
 # --- 7. figures -------------------------------------------------------------
+# The graded CSVs (size_sweep/granularity/scaling) are already on disk from
+# stages 4-6. Plotting needs matplotlib; if it's missing, don't crash the whole
+# demo over a figure step — report it and let the user render later.
 say "7/7  render figures"
-python3 plots/make_plots.py
+if python3 -c 'import matplotlib' 2>/dev/null; then
+    python3 plots/make_plots.py
+else
+    echo "[demo] WARN: matplotlib not installed — skipping figures." >&2
+    echo "[demo]       CSVs are saved in results/. To draw the figures later:" >&2
+    echo "[demo]         sudo apt-get install -y python3-matplotlib && python3 plots/make_plots.py" >&2
+fi
 
 say "DEMO COMPLETE"
 cat <<EOF
