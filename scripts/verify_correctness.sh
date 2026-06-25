@@ -11,8 +11,15 @@
 # deterministic seeding (first K points) and identical update order, the labels
 # are in practice bit-identical, but the relabeling check keeps the proof robust.
 #
+# Set HOSTFILE to prove correctness ACROSS the cluster (the demo case): the
+# parallel run is then launched on every node and the labels it gathers back
+# must still match the single-machine sequential baseline. Without HOSTFILE this
+# runs locally with P ranks (the single-machine dry run).
+#
 # Usage:
 #   scripts/verify_correctness.sh [dataset.bin] [K] [max_iters] [epsilon] [P]
+#   HOSTFILE=hostfile scripts/verify_correctness.sh         # span the cluster
+#   HOSTFILE=hostfile MPI_IF=enp0s3 scripts/verify_correctness.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +29,21 @@ DATA="${1:-data/verify.bin}"
 K="${2:-8}"
 ITERS="${3:-100}"
 EPS="${4:-1e-8}"
-P="${5:-4}"
 
 MPIRUN="${MPIRUN:-mpirun}"
+
+# Cross-cluster execution: --hostfile spreads ranks over the LAN, MPI_IF pins the
+# interface if OpenMPI's auto-select misfires. When a hostfile is given and P was
+# not set explicitly, default P to the total slots so every core takes part.
+EXTRA=()
+if [[ -n "${HOSTFILE:-}" ]]; then
+    EXTRA+=(--hostfile "$HOSTFILE")
+    [[ -n "${MPI_IF:-}" ]] && EXTRA+=(--mca btl_tcp_if_include "$MPI_IF" --mca oob_tcp_if_include "$MPI_IF")
+    if [[ -z "${5:-}" && -z "${P:-}" ]]; then
+        P="$(grep -vE '^\s*(#|$)' "$HOSTFILE" | sed -n 's/.*slots=\([0-9]*\).*/\1/p' | paste -sd+ - | bc)"
+    fi
+fi
+P="${5:-${P:-4}}"
 
 mkdir -p data results
 
@@ -39,8 +58,8 @@ make --no-print-directory >/dev/null
 echo "[verify] sequential run"
 ./bin/kmeans_seq "$DATA" "$K" "$ITERS" "$EPS" results/seq_labels.txt results/seq_centroids.txt
 
-echo "[verify] parallel run (P=$P)"
-"$MPIRUN" -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
+echo "[verify] parallel run (P=$P${HOSTFILE:+, hostfile=$HOSTFILE})"
+"$MPIRUN" ${EXTRA[@]+"${EXTRA[@]}"} -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
     results/par_labels.txt results/par_centroids.txt
 
 echo "[verify] comparing partitions (up to relabeling)"

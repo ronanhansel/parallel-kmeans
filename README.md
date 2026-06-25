@@ -25,6 +25,10 @@ scripts/run_size_sweep.sh     find N where wall time ~= 2-3 min on all cores
 scripts/run_granularity.sh    per-rank compute/comm timing + 25% load verdict
 scripts/run_scaling.sh        speedup ladder 1,2,4,8,... at data scale 2N
 scripts/bootstrap_node.sh     one-shot Ubuntu cluster-node setup (SSH + OpenMPI)
+scripts/make_hostfile.sh      probe nproc over SSH -> hostfile (any node count)
+scripts/sync_nodes.sh         git pull + make on every node (same commit+binary)
+scripts/preflight.sh          pre-demo health check (SSH/MPI/binary/launch)
+scripts/run_demo.sh           ONE command: hostfile->sync->checks->experiments->plots
 
 plots/make_plots.py           CSVs -> all 6 report figures (PNG): size sweep,
                               granularity, runtime, speedup, efficiency,
@@ -113,30 +117,50 @@ and prints `PASS: 20000 points, partitions identical up to relabeling`.
 
 ## Running on the real cluster
 
-1. On **every** node, follow [`docs/CLUSTER_SETUP.md`](docs/CLUSTER_SETUP.md) —
-   it walks Windows users through VirtualBox + bridged networking and runs
-   `scripts/bootstrap_node.sh` to install OpenMPI and wire up passwordless SSH.
-2. Create a `hostfile` listing each node and its core count, e.g.:
-   ```
-   master slots=4
-   slave1 slots=4
-   slave2 slots=4
-   ```
-3. Clone this repo to the **same path** on every node (or share via NFS), then on
-   the master:
-   ```bash
-   make
-   # smoke test: every node prints its hostname
-   mpirun --hostfile hostfile -np 12 hostname
-   ```
-4. Reproduce the experiments — full step-by-step in
-   [`docs/RUNBOOK.md`](docs/RUNBOOK.md):
-   ```bash
-   HOSTFILE=hostfile P=12 scripts/run_size_sweep.sh   # pick N (~2-3 min)
-   HOSTFILE=hostfile P=12 N=<chosen> scripts/run_granularity.sh
-   HOSTFILE=hostfile MAXP=12 N=<chosen> scripts/run_scaling.sh
-   python3 plots/make_plots.py
-   ```
+**One-time setup** (per machine): bring up the Ubuntu VMs and wire passwordless
+SSH per [`docs/CLUSTER_SETUP.md`](docs/CLUSTER_SETUP.md). It walks Windows users
+through VirtualBox + bridged networking and runs `scripts/bootstrap_node.sh` to
+install OpenMPI and generate keys. Use the **same login user** and clone the repo
+to `~/parallel-kmeans-mpi` on every node.
+
+**Then the whole demo is one command** on the master:
+
+```bash
+# first run — probes nproc on each node, builds the hostfile, runs end to end
+NODES="node0 node1 node2" NODE_USER=mpiuser scripts/run_demo.sh
+```
+
+`run_demo.sh` chains the full pipeline and stops at the first failure with a fix
+hint, so the live demo is deterministic:
+
+```
+0. make_hostfile.sh   probe nproc over SSH -> hostfile (single source of truth)
+1. sync_nodes.sh      git pull + make on EVERY node -> same commit + binary
+2. preflight.sh       SSH / same-MPI / binary / launch / singleton-bug checks
+3. verify_correctness across the cluster (parallel == sequential, PASS)
+4. run_size_sweep     runtime vs input size  -> results/size_sweep.csv
+5. run_granularity    per-rank load balance  -> results/granularity.csv
+6. run_scaling        speedup ladder at 2N   -> results/scaling.csv
+7. make_plots.py      all six report figures -> results/fig_*.png
+```
+
+Subsequent runs reuse the existing hostfile (`NODE_USER=mpiuser scripts/run_demo.sh`).
+Useful knobs:
+
+```bash
+QUICK=1   scripts/run_demo.sh   # stop after correctness (fast cluster proof)
+FRESH=1   scripts/run_demo.sh   # rebuild the hostfile (node set changed)
+NO_SYNC=1 scripts/run_demo.sh   # skip git-pull+rebuild (nodes already synced)
+MPI_IF=enp0s3 scripts/run_demo.sh   # pin the interface if auto-select misfires
+```
+
+> The dataset is read **only on rank 0** (the master) and scattered to workers,
+> so the `.bin` file lives only on the master. The **binary**, however, must be
+> current at the same path on every node — that's exactly what `sync_nodes.sh`
+> guarantees before each run.
+
+To run any stage by hand instead of the wrapper, see
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## Reproducing the report figures
 
