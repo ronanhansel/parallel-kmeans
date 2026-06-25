@@ -16,31 +16,43 @@
 #   7. make_plots.py      all six report figures -> results/fig_*.png
 #
 # Cluster membership lives in the hostfile (single source of truth). Add the 3rd
-# or 4th machine by re-running with NODES set, or FRESH=1 to rebuild it.
+# or 4th machine by re-running with NODES set: if the NODES count differs from the
+# existing hostfile, the hostfile is rebuilt automatically (no need for FRESH=1).
 #
 # Usage:
 #   # first time / when node set changes — probe nproc over SSH and build hostfile:
 #   NODES="node0 node1 node2" NODE_USER=mpi scripts/run_demo.sh
 #
+#   # you can also pass raw IPs (first = master, treated as local, no SSH to self):
+#   NODES="172.20.10.9 172.20.10.8 172.20.10.10" NODE_USER=mpi scripts/run_demo.sh
+#
 #   # subsequent runs — reuse the existing hostfile:
 #   NODE_USER=mpi scripts/run_demo.sh
 #
-#   # pin the interface if OpenMPI auto-select misfires (see handoff 2b):
+#   # pin the interface if OpenMPI auto-select misfires (usually auto-detected):
 #   MPI_IF=enp0s3 NODE_USER=mpi scripts/run_demo.sh
 #
 #   # skip the long experiments, just prove the cluster works (correctness only):
 #   QUICK=1 NODE_USER=mpi scripts/run_demo.sh
 #
 # Env knobs (all optional):
-#   NODES      space-separated hosts; required only to (re)build the hostfile
+#   NODES      space-separated hosts; required only to (re)build the hostfile.
+#              First host is the master (rank 0) and is treated as LOCAL — it is
+#              never SSHed to, so the master needs no passwordless SSH to itself.
 #   NODE_USER  SSH/login user shared by every node (e.g. mpi)
 #   HOSTFILE   hostfile path (default: hostfile)
-#   FRESH=1    rebuild the hostfile even if one exists
+#   FRESH=1    force-rebuild the hostfile even if one exists with the right count
 #   QUICK=1    stop after correctness (skip sweep/granularity/scaling/plots)
 #   NO_SYNC=1  skip the git-pull+rebuild stage (nodes already in sync)
 #   N          baseline size for granularity/scaling (default: auto from sweep)
-#   MPI_IF     network interface to pin for mpirun
+#   MPI_IF     network interface to pin for mpirun (default: auto-detected LAN iface)
 #   SIZES      override the size-sweep ladder
+#
+# Networking note: cross-node MPI is pinned to the LAN IPv4 interface with IPv6
+# disabled in the TCP transport (see scripts/_cluster_lib.sh mpi_mca_flags). This
+# is required on bridged VMs whose interfaces also carry non-routable IPv6
+# addresses — without it OpenMPI tries those and aborts with "Unable to find
+# reachable pairing between local and remote interfaces".
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -53,7 +65,26 @@ export HOSTFILE
 say() { printf '\n========== %s ==========\n' "$*"; }
 
 # --- 0. hostfile ------------------------------------------------------------
+# Decide whether to (re)build the hostfile. Rebuild when:
+#   - FRESH=1 is set, or
+#   - no hostfile exists yet, or
+#   - NODES is set and its node COUNT differs from the existing hostfile.
+# That last case is the trap to avoid: you pass NODES="node0 node1 node2" but an
+# old 2-node hostfile is silently reused, so node2 never joins. We detect the
+# mismatch and rebuild instead of running on the wrong cluster.
+need_build=""
 if [[ -n "${FRESH:-}" || ! -f "$HOSTFILE" ]]; then
+    need_build=1
+elif [[ -n "${NODES:-}" ]]; then
+    want_n="$(wc -w <<<"$NODES")"
+    have_n="$(grep -cvE '^\s*(#|$)' "$HOSTFILE" 2>/dev/null || echo 0)"
+    if [[ "$want_n" != "$have_n" ]]; then
+        echo "[demo] NODES requests $want_n node(s) but '$HOSTFILE' has $have_n — rebuilding." >&2
+        need_build=1
+    fi
+fi
+
+if [[ -n "$need_build" ]]; then
     [[ -n "${NODES:-}" ]] || {
         echo "[demo] No hostfile and NODES unset. First run needs e.g.:" >&2
         echo "       NODES=\"node0 node1 node2\" NODE_USER=mpi scripts/run_demo.sh" >&2

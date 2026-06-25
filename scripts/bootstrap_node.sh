@@ -46,7 +46,7 @@ chmod 700 "$HOME/.ssh"
 touch "$HOME/.ssh/authorized_keys"
 chmod 600 "$HOME/.ssh/authorized_keys"
 
-echo "==> [4/5] Generating passphrase-less RSA key (if absent)"
+echo "==> [4/6] Generating passphrase-less RSA key (if absent)"
 if [[ ! -f "$HOME/.ssh/id_rsa" ]]; then
     ssh-keygen -t rsa -b 4096 -N "" -f "$HOME/.ssh/id_rsa"
     echo "    generated ~/.ssh/id_rsa"
@@ -54,7 +54,33 @@ else
     echo "    key already exists, leaving it untouched"
 fi
 
-echo "==> [5/5] Node identity (record these for the key-exchange step)"
+# For an isolated lab cluster on a private hotspot, VM IPs and host keys change
+# across reboots/rebuilds, which makes SSH throw "Host key verification failed"
+# and breaks mpirun's non-interactive worker launch. Relax host-key checking for
+# the cluster's private subnet + node aliases so the launcher never gets stuck on
+# a stale key. This block is idempotent (only added once).
+echo "==> [5/6] Relaxing SSH host-key checks for the lab subnet (idempotent)"
+SSH_CFG="$HOME/.ssh/config"
+touch "$SSH_CFG"; chmod 600 "$SSH_CFG"
+if ! grep -q '# >>> kmeans-cluster >>>' "$SSH_CFG"; then
+    cat >> "$SSH_CFG" <<'CFG'
+
+# >>> kmeans-cluster >>>
+# Isolated lab cluster on a private LAN. Disable host-key prompts so mpirun can
+# SSH to workers non-interactively even after VM rebuilds / DHCP IP churn.
+# Do NOT use these settings on machines exposed to the internet.
+Host 10.* 172.16.* 172.17.* 172.18.* 172.19.* 172.2*.* 172.3*.* 192.168.* node0 node1 node2 node3
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+# <<< kmeans-cluster <<<
+CFG
+    echo "    added kmeans-cluster block to ~/.ssh/config"
+else
+    echo "    kmeans-cluster block already present, leaving it"
+fi
+
+echo "==> [6/6] Node identity (record these for the key-exchange step)"
 echo "----------------------------------------------------------------"
 echo "Hostname : $(hostname)"
 echo -n "LAN IP   : "

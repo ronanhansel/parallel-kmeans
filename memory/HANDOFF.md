@@ -1,6 +1,6 @@
 # Project Handoff — Parallel K-Means MPI Cluster
 
-**Last updated:** 2026-06-21
+**Last updated:** 2026-06-25
 **Read this first.** It lets any agent resume without re-deriving the context.
 
 ---
@@ -107,78 +107,80 @@ from env. Datasets/results are gitignored (regenerate with the same `--seed`).
 
 ---
 
-## 4. Where the user is RIGHT NOW
+## 4. Where the user is RIGHT NOW — CLUSTER IS WORKING
 
-Installing **VirtualBox + Ubuntu Server 24.04** VMs on friends' Windows machines.
-Each Windows host runs one bridged-adapter Ubuntu VM. Target: ≥3 nodes.
+The cluster runs. Cross-node `mpirun` produces a clean single `P=<total>` line and
+correctness PASSes across nodes. Hard-won fixes from the bring-up session are now
+baked into the scripts (see §5). Current topology observed:
 
-The setup steps given to the user (Phases 1–4): create VM (bridged adapter,
-Promiscuous = Allow All, identical username e.g. `mpi`, install OpenSSH server);
-`apt install build-essential libopenmpi-dev openmpi-bin git python3-numpy
-python3-matplotlib net-tools`; clone repo to `~/parallel-kmeans`; `make`; per-node
-smoke test `mpirun -np 4 ./bin/kmeans_mpi data/t.bin 16 50 1e-9` must show `P=4`.
+| Role  | Name   | IP            | cores | user |
+|-------|--------|---------------|-------|------|
+| master| `vb`   | 172.20.10.9   | 2     | mpi  |
+| slave | node1  | 172.20.10.8   | 4     | mpi  |
+| slave | node2  | 172.20.10.10  | 2     | mpi  |
 
-The user's Mac SSH public key (to authorize on the master so the Mac can drive):
+All on commit `2ad1a49`+ (OpenMPI 4.1.6). IPs are DHCP on a phone hotspot, so
+**they change across reboots** — re-check `hostname -I` after any sleep/restart.
+
+**The Mac drives via SSH only** (it's ARM, never a compute node). Its key is
+authorized on the master; from the Mac: `ssh mpi@<master-ip>`. The master's own
+key is authorized on node1/node2 so `mpirun` can launch workers.
+
+The user's Mac SSH public key (authorize on the master so the Mac can drive):
 ```
 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDFdaC37lSOHfGfWjSyxxkepE4J7hG+BYg+GZFQme9oayqgL21Zs2yOVswGCSMefan+2uqn7vh8NmwHh/gLtp1BcoPCgxaqPc65VXxJA94tfIFRaM3Y8juwAf5ExKQeSS2H+p4HjwufPBoKUjJkznoS1rg+xGPy1mX8WuQW2qoT8NeZfVa7mbg3k01NyaJSH8WMhNpivj45+QBDq+WUPukJF/Xp5ODDMF/d66PQktrlS842b/5PCzfaQjf+PBUwYo38ST/B2T1xhSjU9mL9AFveiKgF0OIccrblJdxCbsDvEPWeKB4k68STgRRHH9MUxvZX6A9BLzLHLbJbg0nXmP3RV0mMAFN8i1ppDsr1cBScRs0ILFoOJkP7qcd6pyXklWkofgce5tCfi3NIVEXHol70bQId4jmelmxS2Bha+mGvc1a2l+TzEaB3K3d1uYh2iLYr9vpo1GKWDu9qKWyO9cArrNQIPC0E2n+wy/sipfnduIvZxwNDGHmIXQK0vgW3IEX2BnbNxllcRpzcCbaF6QcCTxqbqidMc0NJTMuPvzcAlUGoqZivi1hErypNomOtljvc5lBV9+WxDprDD7MV7V76M4/iejTNhbb8aKz36ULRVRfLa0k+Vjj0O8yLooSw4+dcYpS0/E43QBxPOaaIUtA2ccbvnieFVJDwbUoix1Ci5Q== ronan@Ronans-MacBook-Pro.local
 ```
 
 ---
 
-## 5. RESUME HERE — what to do when the user returns
+## 5. Hard-won bring-up fixes (now baked into the scripts)
 
-The user will paste, per VM: hostname, `hostname -I` (bridged LAN IP), `nproc`,
-and the `P=4` smoke-test output; plus which IP is the master and whether the Mac
-shares the LAN.
+Each of these was a real failure during cluster bring-up. The scripts now handle
+them automatically — listed so no one re-debugs them from scratch.
 
-Then:
+- **Master must not SSH to itself.** `mpirun` launches the local rank by fork, not
+  SSH. The orchestration scripts (`_cluster_lib.sh` → `is_local`/`run_on`) run the
+  master's commands locally; only workers go over SSH. The hostfile writes the
+  master by its **real hostname** (`master_token`) so OpenMPI also forks rank 0
+  instead of SSHing to itself.
+- **IPv6 / wrong-NIC data transport (the big one).** Launch (`mpirun hostname`)
+  worked but real runs aborted: `Unable to find reachable pairing between local
+  and remote interfaces` / `connect() to 2401:... No route to host`. OpenMPI was
+  using non-routable IPv6 / the wrong interface. Fix (proved 3/3 reliable, now in
+  `mpi_mca_flags`): `--mca btl_tcp_if_include <iface> --mca btl_tcp_disable_family 6`.
+  The iface auto-detects via `ip route get 1.1.1.1`; override with `MPI_IF=<iface>`.
+- **`Host key verification failed` after VM rebuild / IP churn.** `bootstrap_node.sh`
+  now writes an `~/.ssh/config` block disabling strict host-key checks for the lab
+  subnet (isolated network only).
+- **Stale hostfile reused.** Passing `NODES="a b c"` but an old 2-node hostfile was
+  silently reused. `run_demo.sh` now rebuilds when the `NODES` count differs from
+  the existing hostfile; `FRESH=1` always forces it.
+- **`numpy` missing.** `gen_dataset.py` has a pure-stdlib fallback so the
+  cluster-proof (correctness) path runs without numpy; bootstrap installs
+  numpy+matplotlib for fast big-dataset generation and plotting.
+- **Only the master needs the dataset.** rank 0 reads the `.bin` and `Scatterv`s
+  the rows; workers only need the **binary** at the same path (`sync_nodes.sh`
+  guarantees that). No NFS, no per-node data copy. (Corrects the old §2 note.)
 
-1. **Reach the master** from the Mac: `ssh mpi@<master-ip> hostname`. (Same-LAN
-   bridged VMs are directly reachable, like Vinh was under mirrored mode.)
-2. **Exchange SSH keys** so every node logs into every other node passwordlessly
-   in BOTH directions (MPI launches workers over SSH non-interactively). Use
-   `bootstrap_node.sh` to generate keys; append each node's `~/.ssh/id_rsa.pub`
-   into every other node's `~/.ssh/authorized_keys`. Verify `ssh <other> hostname`
-   works with no prompt between every pair.
-3. **Build the hostfile** (overwrite the stray one) at repo root, e.g.:
-   ```
-   <master-ip> slots=<cores>
-   <node2-ip>  slots=<cores>
-   <node3-ip>  slots=<cores>
-   ```
-4. **Cluster smoke test:** `mpirun --hostfile hostfile -np <total> hostname` →
-   must print each node's hostname. Then a real run:
-   `mpirun --hostfile hostfile -np <total> ./bin/kmeans_mpi data/t.bin 16 50 1e-9`
-   → must show a single `P=<total>` line.
-   - Repo must be at the **same path on every node** AND the dataset must exist on
-     every node (regenerate with identical `--seed`, or share via NFS). The run
-     scripts only generate data on the launching node — for multi-node runs,
-     generate the dataset on each node first with the same args.
-   - If OpenMPI picks a wrong interface, pin it:
-     `--mca btl_tcp_if_include <iface> --mca oob_tcp_if_include <iface>`.
-5. **Run the experiments** (full detail in `docs/RUNBOOK.md`):
-   ```
-   HOSTFILE=hostfile P=<total>  scripts/run_size_sweep.sh    # pick N (~2–3 min wall)
-   HOSTFILE=hostfile P=<total>  N=<chosen> scripts/run_granularity.sh
-   HOSTFILE=hostfile MAXP=<total> N=<chosen> scripts/run_scaling.sh
-   python3 plots/make_plots.py
-   ```
-   Required outputs: correctness PASS; runtime-vs-size to fix N; per-rank
-   compute+comm stacked bar (load balance, retune if idle spread >25%); runtime +
-   speedup curves at 2N over P = 1,2,4,…,2×total_cores.
-6. **Fill in the report** from `docs/REPORT_OUTLINE.md` (already mapped
-   section-by-section to each experiment).
+### How to run it (one command, from the master)
+```
+FRESH=1 NODES="172.20.10.9 172.20.10.8 172.20.10.10" NODE_USER=mpi scripts/run_demo.sh
+```
+First host = master (local). `QUICK=1` stops after correctness; drop `FRESH=1` to
+reuse the hostfile. Full per-stage detail in `docs/RUNBOOK.md`; setup in
+`docs/CLUSTER_SETUP.md` (troubleshooting table covers every error above).
 
 ---
 
 ## 6. Open questions / decisions pending
 
-- **Total node + core count** not yet known → sets the speedup ladder
-  (1,2,4,…,2×cores). Ask when results come in.
-- **Remote teammates?** If the 4 are NOT co-located, `docs/REMOTE_ACCESS.md`
-  covers Tailscale (each node joins one tailnet; pin MPI to `tailscale0`). Works
-  for dev/debug, but WAN latency distorts the Allreduce-heavy timing — do the
-  FINAL graded measurements on a co-located bridged LAN. Confirm with professor if
-  remote is acceptable.
-- The user asked twice about making the Mac a node (Docker x86, then Tailscale).
-  Both answered: Mac stays the driver. Don't reopen unless the user insists.
+- **Network latency is the timing risk.** On the phone hotspot, node2 showed
+  150–800 ms RTT vs node1's ~20 ms. The Allreduce-per-iteration algorithm is
+  latency-bound, so speedup numbers degrade badly on a weak link (preflight saw
+  `comm=14 s` on a trivial job). Correctness and cluster-formation are unaffected.
+  **For the graded timing run, use a fast/wired LAN**, not a congested hotspot.
+- **Speedup ladder** = 1,2,4,…,2×total_cores. With the 3 VMs above that's 8 total
+  cores → ladder 1,2,4,8.
+- **Remote teammates?** `docs/REMOTE_ACCESS.md` covers Tailscale, but WAN latency
+  makes timing meaningless — do FINAL measurements co-located. Confirm with prof.
+- Mac stays the driver (asked/answered twice). Don't reopen unless the user insists.
