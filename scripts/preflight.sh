@@ -31,12 +31,11 @@ CLUSTER_MASTER="${HOSTS[0]}"
 TOTAL="$(total_slots_from_hostfile "$HOSTFILE")"
 [[ "${TOTAL:-0}" -ge 1 ]] || { echo "[preflight] FAIL: could not total slots from '$HOSTFILE'." >&2; exit 1; }
 
-# Interface pin, if requested, applied to both the TCP byte-transport and the
-# out-of-band launcher channel (both must agree or rank wire-up hangs).
+# MCA flags pin the TCP transport to the LAN interface and disable IPv6 (settled
+# empirically — see mpi_mca_flags in _cluster_lib.sh). MPI_IF overrides the iface.
 EXTRA=(--hostfile "$HOSTFILE")
-if [[ -n "${MPI_IF:-}" ]]; then
-    EXTRA+=(--mca btl_tcp_if_include "$MPI_IF" --mca oob_tcp_if_include "$MPI_IF")
-fi
+# shellcheck disable=SC2046
+EXTRA+=($(mpi_mca_flags))
 
 echo "[preflight] hostfile '$HOSTFILE': ${#HOSTS[@]} node(s), $TOTAL total slots"
 if [[ ${#HOSTS[@]} -lt 3 ]]; then

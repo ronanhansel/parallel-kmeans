@@ -14,6 +14,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/_cluster_lib.sh
+source "$ROOT/scripts/_cluster_lib.sh"
 
 MPIRUN="${MPIRUN:-mpirun}"
 DIM="${DIM:-16}"
@@ -37,7 +39,8 @@ OUT="results/size_sweep.csv"
 # Extra mpirun flags. Set HOSTFILE to run across the cluster; OVERSUBSCRIBE to
 # pack more ranks than slots on a single box.
 EXTRA=()
-[[ -n "${HOSTFILE:-}" ]] && EXTRA+=(--hostfile "$HOSTFILE")
+# shellcheck disable=SC2206
+[[ -n "${HOSTFILE:-}" ]] && EXTRA+=(--hostfile "$HOSTFILE" $(mpi_mca_flags))
 [[ -n "${OVERSUBSCRIBE:-}" ]] && EXTRA+=(--oversubscribe)
 
 mkdir -p data results

@@ -24,6 +24,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/_cluster_lib.sh
+source "$ROOT/scripts/_cluster_lib.sh"
 
 DATA="${1:-data/verify.bin}"
 K="${2:-8}"
@@ -37,10 +39,10 @@ MPIRUN="${MPIRUN:-mpirun}"
 # not set explicitly, default P to the total slots so every core takes part.
 EXTRA=()
 if [[ -n "${HOSTFILE:-}" ]]; then
-    EXTRA+=(--hostfile "$HOSTFILE")
-    [[ -n "${MPI_IF:-}" ]] && EXTRA+=(--mca btl_tcp_if_include "$MPI_IF" --mca oob_tcp_if_include "$MPI_IF")
+    # shellcheck disable=SC2206
+    EXTRA+=(--hostfile "$HOSTFILE" $(mpi_mca_flags))
     if [[ -z "${5:-}" && -z "${P:-}" ]]; then
-        P="$(grep -vE '^\s*(#|$)' "$HOSTFILE" | sed -n 's/.*slots=\([0-9]*\).*/\1/p' | paste -sd+ - | bc)"
+        P="$(total_slots_from_hostfile "$HOSTFILE")"
     fi
 fi
 P="${5:-${P:-4}}"

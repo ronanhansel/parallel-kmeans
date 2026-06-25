@@ -16,6 +16,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/_cluster_lib.sh
+source "$ROOT/scripts/_cluster_lib.sh"
 
 MPIRUN="${MPIRUN:-mpirun}"
 DIM="${DIM:-16}"

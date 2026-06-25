@@ -80,6 +80,32 @@ master_token() {
     hostname
 }
 
+# primary_iface : the network interface carrying this machine's main IPv4 LAN
+# address (e.g. enp0s3 on a VirtualBox bridged VM). Used to pin MPI's TCP
+# transport so it doesn't wander onto a non-routable interface.
+primary_iface() {
+    ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
+}
+
+# mpi_mca_flags : the --mca flags every cluster mpirun must use, as a string.
+# Settled empirically on the bridged VM cluster (3/3 reliable vs flaky/​failing
+# without): pin the TCP byte-transport to the LAN interface AND disable IPv6 in
+# that transport. Without the IPv6 disable, OpenMPI keeps trying the VMs'
+# non-routable link/global IPv6 addresses (2401:.../fd17:...) and aborts with
+# "Unable to find reachable pairing between local and remote interfaces".
+#
+# Override the interface with MPI_IF=<iface> if auto-detection picks wrong.
+mpi_mca_flags() {
+    local iface="${MPI_IF:-$(primary_iface)}"
+    local flags=""
+    if [[ -n "$iface" ]]; then
+        flags="--mca btl_tcp_if_include $iface --mca oob_tcp_if_include $iface"
+    fi
+    # Disable IPv6 in the TCP BTL (the decisive flag) regardless of iface.
+    flags="$flags --mca btl_tcp_disable_family 6"
+    echo "$flags"
+}
+
 # hosts_from_hostfile <path> : print the host token (first field) of each real
 # entry, one per line. Skips comments and blank lines.
 hosts_from_hostfile() {
