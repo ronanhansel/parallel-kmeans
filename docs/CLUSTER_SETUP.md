@@ -77,9 +77,11 @@ ROLE=master scripts/bootstrap_node.sh
 ROLE=slave scripts/bootstrap_node.sh
 ```
 
-This installs `openssh-server`, `make`, and the MPI toolchain (`mpich`),
-prepares `~/.ssh` (mode 700), generates a passphrase-less RSA key if missing,
-and prints the VM's **LAN IP** and its **public key**. Write down each IP.
+This installs `openssh-server`, `make`, and the MPI toolchain (**OpenMPI** —
+`libopenmpi-dev openmpi-bin`), prepares `~/.ssh` (mode 700), generates a
+passphrase-less RSA key if missing, and prints the VM's **LAN IP** and its
+**public key**. Write down each IP. (Every node must use the same MPI
+implementation; preflight checks this.)
 
 > **Why passphrase-less keys?** `mpirun` opens SSH sessions to the workers
 > non-interactively; it cannot type a password. This is standard for an isolated
@@ -138,66 +140,68 @@ otherwise.
 
 ---
 
-## 6. Build on every node
+## 6. Build the hostfile, sync, and run — one command from the master
 
-The binary must exist at the **same path** on every node. Easiest: build on each.
-
-```bash
-cd ~/parallel-kmeans-mpi && make
-```
-
-(`make` produces `bin/kmeans_mpi` and `bin/kmeans_seq`.)
-
-> The cluster runs `mpich` (`sudo apt install mpich`). The bootstrap script
-> installs it. If you prefer OpenMPI, install `libopenmpi-dev openmpi-bin`
-> instead and rebuild — the source is implementation-agnostic.
-
----
-
-## 7. The hostfile
-
-Create `hosts.txt` in the repo root on the master. `slots` = cores you want to
-use on that node (match physical cores per the assignment).
-
-```
-# hostname   slots=<cores on that VM>
-node0 slots=4
-node1 slots=4
-node2 slots=4
-```
-
-Three 4-core VMs → 12 total ranks, which is the configuration the experiments
-target.
-
----
-
-## 8. Smoke test across the cluster
+From here on you only work on the **master** (node0). The repo ships four
+orchestration scripts that make the whole pipeline repeatable; `run_demo.sh`
+chains them in order and stops at the first failure with a fix hint.
 
 ```bash
-# Should print 12 lines naming the three hosts.
-mpirun --hostfile hosts.txt -np 12 hostname
+cd ~/parallel-kmeans-mpi
 
-# Real run: generate a dataset, then cluster it across the LAN.
-python3 scripts/gen_dataset.py --out data/smoke.bin --points 200000 --dim 16 --clusters 16
-mpirun --hostfile hosts.txt -np 12 ./bin/kmeans_mpi data/smoke.bin 16 50 1e-9
+# First run: probe each node's core count over SSH, build the hostfile, sync
+# every node to the same commit + binary, run preflight checks, then the full
+# experiment + plotting pipeline. NODE_USER is the shared Linux username.
+NODES="node0 node1 node2" NODE_USER=mpiuser scripts/run_demo.sh
 ```
 
-If the dataset must exist on every node (it does — rank 0 reads it, but workers
-need the binary and any input paths consistent), either keep the dataset on the
-master only (rank 0 reads + scatters, which is how this program works — workers
-get their rows over the wire, so **only the master needs the data file**), or
-share `~/parallel-kmeans-mpi` over NFS for convenience.
+That single command performs, in order:
 
-> This program reads the dataset **only on rank 0** and distributes rows with
-> `MPI_Scatterv`. So the data file needs to exist **only on the master**. The
-> compiled binary, however, must exist at the same path on every node.
+| Stage | Script | What it proves / produces |
+|-------|--------|---------------------------|
+| 0 | `make_hostfile.sh` | probes `nproc` per node → `hostfile` (first host = rank 0/master) |
+| 1 | `sync_nodes.sh` | `git pull` + `make clean && make` on every node → same commit + fresh binary |
+| 2 | `preflight.sh` | SSH, identical MPI impl, binary present, launch path, no `P=1` singleton bug |
+| 3 | `verify_correctness.sh` | parallel == sequential **across the cluster** (PASS) |
+| 4–6 | `run_size_sweep` / `run_granularity` / `run_scaling` | the three graded experiments |
+| 7 | `make_plots.py` | all six report figures |
+
+> **Only the master needs the dataset.** This program reads the `.bin` **only on
+> rank 0** and distributes rows with `MPI_Scatterv`, so workers get their points
+> over the wire. What every node *does* need is the compiled binary at the
+> **same path** — `sync_nodes.sh` guarantees that (it rebuilds on each node), so
+> there is no NFS to set up and no data to copy around.
+
+> The cluster runs **OpenMPI** (`libopenmpi-dev openmpi-bin`), installed by the
+> bootstrap script. Every node must use the **same** implementation — preflight
+> fails loudly if they differ.
+
+### Useful variants
+
+```bash
+# Fast cluster proof only — topology + correctness, skip the long experiments:
+QUICK=1 NODE_USER=mpiuser scripts/run_demo.sh
+
+# Re-run later reusing the existing hostfile (no NODES needed):
+NODE_USER=mpiuser scripts/run_demo.sh
+
+# Adding the 3rd/4th machine — rebuild the hostfile from the new node set:
+FRESH=1 NODES="node0 node1 node2 node3" NODE_USER=mpiuser scripts/run_demo.sh
+
+# Pin the network interface if OpenMPI auto-select grabs the wrong one:
+MPI_IF=enp0s3 NODE_USER=mpiuser scripts/run_demo.sh
+```
+
+> If `~/parallel-kmeans-mpi` is not the repo path on a node, pass
+> `REPO_DIR=<path-relative-to-home>`. If you'd rather drive each step by hand,
+> the individual scripts take the same env vars — see [`docs/RUNBOOK.md`](RUNBOOK.md).
 
 ---
 
-## 9. You're cluster-ready
+## 7. You're cluster-ready
 
-Proceed to `docs/RUNBOOK.md` to run the graded experiments and produce the
-report charts.
+`run_demo.sh` already produced every CSV and figure. To re-run or tune
+individual experiments by hand, proceed to [`docs/RUNBOOK.md`](RUNBOOK.md).
 
 ### Quick troubleshooting
 
@@ -208,4 +212,5 @@ report charts.
 | `mpirun: command not found` | MPI not installed / not on PATH. Re-run bootstrap. |
 | VMs can't ping each other | Network not Bridged, or on different WiFi networks. Re-check step 1.3. |
 | `There are not enough slots` | Asking for more ranks than `slots` in the hostfile. Raise slots or add `--oversubscribe`. |
-| Different MPI on different nodes | Use the same MPI implementation everywhere (all `mpich` or all OpenMPI). |
+| Different MPI on different nodes | Use the same MPI implementation everywhere (all OpenMPI). `preflight.sh` catches this. |
+| Four `P=1` lines instead of one `P=<total>` | Stale binary linked against a different MPI runtime. Re-run `scripts/sync_nodes.sh` (`make clean && make` on every node). |

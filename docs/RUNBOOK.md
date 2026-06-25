@@ -7,6 +7,37 @@ single multi-core machine for a dry run.
 All scripts read knobs from environment variables and write CSVs to `results/`.
 `plots/make_plots.py` turns those CSVs into PNGs, also in `results/`.
 
+## TL;DR — the whole pipeline in one command (cluster)
+
+On the master, after the nodes are up and passwordless SSH works:
+
+```bash
+# First run: build hostfile (probes nproc per node), sync every node to the same
+# commit + binary, preflight, correctness, all three experiments, all figures.
+NODES="node0 node1 node2" NODE_USER=mpiuser scripts/run_demo.sh
+```
+
+`run_demo.sh` chains stages 0–7 below and stops at the first failure with a fix
+hint, so a live demo is one deterministic command. Useful variants:
+
+```bash
+QUICK=1   NODE_USER=mpiuser scripts/run_demo.sh   # topology + correctness only
+          NODE_USER=mpiuser scripts/run_demo.sh   # reuse existing hostfile
+FRESH=1 NODES="node0 node1 node2 node3" NODE_USER=mpiuser scripts/run_demo.sh  # add a node
+MPI_IF=enp0s3 NODE_USER=mpiuser scripts/run_demo.sh                            # pin interface
+```
+
+The orchestration scripts that `run_demo.sh` calls (all usable standalone):
+
+| Script | Job |
+|--------|-----|
+| `scripts/make_hostfile.sh node0 node1 node2` | probe `nproc` over SSH → `hostfile` |
+| `scripts/sync_nodes.sh` | `git pull` + `make clean && make` on every node in the hostfile |
+| `scripts/preflight.sh` | SSH / same-MPI / binary / launch / singleton-bug checks |
+
+The rest of this file is the **manual path** — drive each experiment yourself,
+e.g. to retune N or rerun a single chart. It's also the single-machine dry run.
+
 ## 0. Build
 
 ```bash
