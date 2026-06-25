@@ -6,10 +6,13 @@
 # "P=1" lines instead of one "P=<total>" — the binary was linked against a
 # different MPI runtime; see docs/RUNBOOK / handoff "singleton bug").
 #
-# This script SSHes into each host listed in the hostfile and runs, in the repo:
+# This script brings each host in the hostfile to the same commit + a freshly
+# linked binary by running, in the repo:
 #     git pull --ff-only   (skip with NO_PULL=1)
 #     make clean && make
-# so all nodes end up at the same commit with a freshly linked binary.
+#
+# The MASTER (rank 0, wherever this runs) is built LOCALLY — it never SSHes to
+# itself. Only the other nodes are reached over SSH.
 #
 # The hostfile is the single source of truth for cluster membership — add the
 # 3rd/4th node there (via make_hostfile.sh) and it's picked up automatically.
@@ -22,15 +25,15 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/_cluster_lib.sh
+source "$ROOT/scripts/_cluster_lib.sh"
 
 HOSTFILE="${HOSTFILE:-hostfile}"
-NODE_USER="${NODE_USER:+${NODE_USER}@}"
 REPO_DIR="${REPO_DIR:-parallel-kmeans-mpi}"   # path on each node, relative to ~
 
 [[ -f "$HOSTFILE" ]] || { echo "[sync] FAIL: no hostfile '$HOSTFILE' (run make_hostfile.sh first)." >&2; exit 1; }
 
-# Extract host tokens (first field of each non-comment, non-blank line).
-mapfile -t HOSTS < <(grep -vE '^\s*(#|$)' "$HOSTFILE" | awk '{print $1}')
+mapfile -t HOSTS < <(hosts_from_hostfile "$HOSTFILE")
 [[ ${#HOSTS[@]} -ge 1 ]] || { echo "[sync] FAIL: no hosts in '$HOSTFILE'." >&2; exit 1; }
 
 if [[ -n "${NO_PULL:-}" ]]; then
@@ -44,12 +47,22 @@ echo "[sync] repo on each node: ~/$REPO_DIR   ($( [[ -n "${NO_PULL:-}" ]] && ech
 
 fail=0
 for host in "${HOSTS[@]}"; do
-    echo "[sync] ===== $host ====="
-    if ssh -o BatchMode=yes -o ConnectTimeout=8 "${NODE_USER}${host}" \
-        "cd ~/$REPO_DIR && $BUILD" 2>&1 | sed "s/^/[sync:$host] /"; then
+    tag="$host"; is_local "$host" && tag="$host (master, local)"
+    echo "[sync] ===== $tag ====="
+    # The master builds in this very checkout ($ROOT); workers build in ~/REPO_DIR.
+    if is_local "$host"; then
+        cmd="cd '$ROOT' && $BUILD"
+    else
+        cmd="cd ~/$REPO_DIR && $BUILD"
+    fi
+    if run_on "$host" "$cmd" 2>&1 | sed "s/^/[sync:$host] /"; then
         # Confirm the binary is present and report its commit for an audit trail.
-        commit="$(ssh -o BatchMode=yes "${NODE_USER}${host}" \
-            "cd ~/$REPO_DIR && test -x bin/kmeans_mpi && git rev-parse --short HEAD" 2>/dev/null || true)"
+        if is_local "$host"; then
+            check="cd '$ROOT' && test -x bin/kmeans_mpi && git rev-parse --short HEAD"
+        else
+            check="cd ~/$REPO_DIR && test -x bin/kmeans_mpi && git rev-parse --short HEAD"
+        fi
+        commit="$(run_on "$host" "$check" 2>/dev/null || true)"
         if [[ -n "$commit" ]]; then
             printf "[sync] OK   %-22s commit=%s\n" "$host" "$commit"
         else
