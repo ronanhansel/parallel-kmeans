@@ -35,6 +35,8 @@ REPO_DIR="${REPO_DIR:-parallel-kmeans-mpi}"   # path on each node, relative to ~
 
 mapfile -t HOSTS < <(hosts_from_hostfile "$HOSTFILE")
 [[ ${#HOSTS[@]} -ge 1 ]] || { echo "[sync] FAIL: no hosts in '$HOSTFILE'." >&2; exit 1; }
+# First hostfile entry is the master (rank 0) — the machine running this script.
+CLUSTER_MASTER="${HOSTS[0]}"
 
 if [[ -n "${NO_PULL:-}" ]]; then
     BUILD='make clean >/dev/null && make'

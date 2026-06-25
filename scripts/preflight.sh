@@ -26,6 +26,8 @@ MPIRUN="${MPIRUN:-mpirun}"
 [[ -f "$HOSTFILE" ]] || { echo "[preflight] FAIL: no hostfile '$HOSTFILE'." >&2; exit 1; }
 
 mapfile -t HOSTS < <(hosts_from_hostfile "$HOSTFILE")
+# First hostfile entry is the master (rank 0) — the machine running this script.
+CLUSTER_MASTER="${HOSTS[0]}"
 TOTAL="$(total_slots_from_hostfile "$HOSTFILE")"
 [[ "${TOTAL:-0}" -ge 1 ]] || { echo "[preflight] FAIL: could not total slots from '$HOSTFILE'." >&2; exit 1; }
 

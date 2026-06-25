@@ -13,6 +13,13 @@
 CLUSTER_USER="${NODE_USER:-}"
 SSH_USER="${CLUSTER_USER:+${CLUSTER_USER}@}"
 
+# The master (rank 0). Callers set this to the FIRST host before using is_local.
+# By the documented convention the first host IS the machine these scripts run
+# on, so it is treated as local unconditionally — no name resolution, no SSH.
+# This is the authoritative signal; the resolution checks below are only a
+# fallback for hosts that aren't the designated master.
+CLUSTER_MASTER="${CLUSTER_MASTER:-}"
+
 # All names/addresses that refer to THIS machine: hostnames + every local IP.
 _self_id="$( { hostname; hostname -s; hostname -f; hostname -I; } 2>/dev/null \
     | tr ' ' '\n' | grep -v '^$' | sort -u )"
@@ -34,10 +41,12 @@ PY
     fi
 }
 
-# is_local <host> : true if <host> names the machine we're running on. Matches by
-# literal name/IP first, then by resolving <host> to an IP and checking it
-# against this machine's IPs — so an alias that points at the master is caught.
+# is_local <host> : true if <host> names the machine we're running on. The
+# designated master (CLUSTER_MASTER, the first host) is local by definition.
+# Otherwise match by literal name/IP, then by resolving <host> to an IP and
+# checking it against this machine's IPs — so an alias that points here is caught.
 is_local() {
+    [[ -n "$CLUSTER_MASTER" && "$1" == "$CLUSTER_MASTER" ]] && return 0
     case "$1" in
         localhost|127.0.0.1|"$(hostname)") return 0 ;;
     esac

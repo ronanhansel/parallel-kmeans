@@ -23,6 +23,11 @@ source "$ROOT/scripts/_cluster_lib.sh"
 
 [[ $# -ge 1 ]] || { echo "usage: $0 <host1> [host2 ...]" >&2; exit 1; }
 
+# The first host is the master (rank 0) and is this very machine — treat it as
+# local unconditionally (no SSH, no name resolution), regardless of how it's
+# named or what /etc/hosts maps it to.
+CLUSTER_MASTER="$1"
+
 OUT="${OUT:-hostfile}"
 
 : > "$OUT.tmp"
