@@ -107,7 +107,10 @@ echo "[preflight]   saved topology proof -> results/cluster_hostname.txt"
 # --- 5. real run, must report a SINGLE P=<total> line (no singleton bug) ----
 echo "[preflight] [5/5] tiny kmeans run, expect one 'P=$TOTAL' line"
 [[ -f data/t.bin ]] || python3 scripts/gen_dataset.py --out data/t.bin --points 20000 --dim 16 --clusters 16 --seed 7 >/dev/null
-RUN="$("$MPIRUN" "${EXTRA[@]}" -np "$TOTAL" ./bin/kmeans_mpi data/t.bin 16 50 1e-9 2>/dev/null || true)"
+# KMEANS_PROGRESS=1 makes rank 0 draw a live bar on STDERR; we let that flow to
+# the terminal so the run shows motion instead of looking hung, while still
+# capturing STDOUT (the 'P=' line) for the singleton-bug check below.
+RUN="$(KMEANS_PROGRESS=1 "$MPIRUN" "${EXTRA[@]}" -np "$TOTAL" ./bin/kmeans_mpi data/t.bin 16 50 1e-9 || true)"
 pcount="$(grep -c "P=$TOTAL " <<<"$RUN" || true)"
 psingle="$(grep -c 'P=1 ' <<<"$RUN" || true)"
 echo "$RUN" | sed 's/^/[preflight]   /'

@@ -21,11 +21,18 @@ generate plots incrementally as experiments finish.
 import argparse
 import csv
 import os
+import struct
 import sys
 
 import matplotlib
 matplotlib.use("Agg")            # headless: works over SSH on the cluster
 import matplotlib.pyplot as plt
+
+try:
+    import numpy as np
+    HAVE_NUMPY = True
+except ImportError:
+    HAVE_NUMPY = False
 
 
 def read_csv(path):
@@ -222,18 +229,143 @@ def plot_comm_fraction(results_dir):
     return f"wrote {out}"
 
 
+def _read_dataset(path):
+    """Read the little-endian dataset binary written by gen_dataset.py.
+    Returns (M, dim, K, data as a flat float list). numpy used when present."""
+    with open(path, "rb") as f:
+        M, dim, K = struct.unpack("<3i", f.read(12))
+        n = M * dim
+        if HAVE_NUMPY:
+            data = np.frombuffer(f.read(8 * n), dtype="<f8").reshape(M, dim)
+        else:
+            data = list(struct.unpack("<%dd" % n, f.read(8 * n)))
+    return M, dim, K, data
+
+
+def _read_labels(path):
+    with open(path) as f:
+        return [int(x) for x in f if x.strip()]
+
+
+def plot_clustering(results_dir, data_path="data/verify.bin",
+                    labels_path=None):
+    """The actual k-means RESULT: points coloured by their assigned cluster.
+
+    Uses the dataset that the correctness check clustered (data/verify.bin) and
+    the parallel run's labels (results/par_labels.txt). For dim > 2 we project
+    to the first two principal components (numpy); with numpy absent or dim < 2
+    we fall back to the first two raw coordinates. Centroids are drawn as the
+    per-cluster mean so the partition is easy to read at a glance.
+    """
+    if labels_path is None:
+        labels_path = os.path.join(results_dir, "par_labels.txt")
+    if not os.path.isfile(data_path):
+        return f"skip clustering: {data_path} not found (run verify_correctness.sh)"
+    if not os.path.isfile(labels_path):
+        return f"skip clustering: {labels_path} not found (run verify_correctness.sh)"
+
+    M, dim, K, data = _read_dataset(data_path)
+    labels = _read_labels(labels_path)
+    if len(labels) != M:
+        return f"skip clustering: {len(labels)} labels but M={M} points"
+
+    if HAVE_NUMPY:
+        X = data
+        lab = np.asarray(labels)
+        if dim >= 2:
+            # Project to 2D principal components so high-dim structure is visible.
+            Xc = X - X.mean(axis=0)
+            # SVD is numerically stable and avoids forming the covariance matrix.
+            _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
+            P = Xc @ Vt[:2].T
+            axis_label = "principal component"
+        else:
+            P = np.column_stack([X[:, 0], np.zeros(M)])
+            axis_label = "x"
+        fig, ax = plt.subplots(figsize=(7, 6))
+        ax.scatter(P[:, 0], P[:, 1], c=lab, cmap="tab20", s=6, alpha=0.6,
+                   linewidths=0)
+        # Centroid of each cluster in the projected space.
+        for k in range(K):
+            pts = P[lab == k]
+            if len(pts):
+                cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                ax.scatter([cx], [cy], marker="X", c="black", s=120,
+                           edgecolors="white", linewidths=1.5, zorder=5)
+        ax.set_xlabel(f"{axis_label} 1")
+        ax.set_ylabel(f"{axis_label} 2" if dim >= 2 else "")
+    else:
+        # Pure-Python fallback: first two raw dims, no projection, no centroids.
+        xs = [data[i * dim + 0] for i in range(M)]
+        ys = [data[i * dim + 1] if dim >= 2 else 0.0 for i in range(M)]
+        fig, ax = plt.subplots(figsize=(7, 6))
+        ax.scatter(xs, ys, c=labels, cmap="tab20", s=6, alpha=0.6, linewidths=0)
+        ax.set_xlabel("x 1"); ax.set_ylabel("x 2" if dim >= 2 else "")
+
+    ax.set_title(f"K-means result: {M} points, K={K}, dim={dim} "
+                 f"({'PCA proj.' if (HAVE_NUMPY and dim > 2) else 'raw dims'})")
+    ax.grid(True, alpha=0.2)
+    out = os.path.join(results_dir, "fig_clustering.png")
+    fig.tight_layout(); fig.savefig(out, dpi=130); plt.close(fig)
+    return f"wrote {out} (M={M}, K={K}, dim={dim})"
+
+
+def _open_images(paths):
+    """Open the given image files in the OS default viewer. Best-effort and
+    cross-platform: macOS `open`, Linux `xdg-open`, Windows `start`. Skips
+    silently when no opener is available (e.g. a headless cluster node)."""
+    import shutil
+    import subprocess
+
+    if sys.platform == "darwin":
+        opener = ["open"]
+    elif os.name == "nt":
+        opener = ["cmd", "/c", "start", ""]
+    elif shutil.which("xdg-open"):
+        opener = ["xdg-open"]
+    else:
+        print("[plots] --open: no image viewer found (headless?); skipping.",
+              file=sys.stderr)
+        return
+    for p in paths:
+        try:
+            subprocess.Popen(opener + [p],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            print(f"[plots] --open: could not open {p}: {e}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Render report figures from results CSVs.")
     ap.add_argument("--results-dir", default="results", help="directory holding the CSVs")
+    ap.add_argument("--data", default="data/verify.bin",
+                    help="dataset binary to visualise in the clustering figure")
+    ap.add_argument("--open", action="store_true",
+                    help="open every figure that was written in the default image viewer")
     args = ap.parse_args()
 
     if not os.path.isdir(args.results_dir):
         print(f"error: results dir '{args.results_dir}' does not exist", file=sys.stderr)
         return 1
 
+    # Clustering first: it's the actual result. The rest are performance figures.
+    print("[plots]", plot_clustering(args.results_dir, args.data))
     for fn in (plot_size_sweep, plot_granularity, plot_runtime, plot_speedup,
                plot_efficiency, plot_comm_fraction):
         print("[plots]", fn(args.results_dir))
+
+    # Collect every figure that actually exists on disk, in a sensible order
+    # (result first), and optionally open them all.
+    figs = ["fig_clustering.png", "fig_size_sweep.png", "fig_granularity.png",
+            "fig_runtime.png", "fig_speedup.png", "fig_efficiency.png",
+            "fig_comm_fraction.png"]
+    present = [os.path.join(args.results_dir, f) for f in figs
+               if os.path.isfile(os.path.join(args.results_dir, f))]
+    print(f"[plots] {len(present)} figure(s) in {args.results_dir}/:")
+    for p in present:
+        print(f"[plots]   {p}")
+    if args.open and present:
+        _open_images(present)
     return 0
 
 

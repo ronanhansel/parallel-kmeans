@@ -61,7 +61,9 @@ echo "[verify] sequential run"
 ./bin/kmeans_seq "$DATA" "$K" "$ITERS" "$EPS" results/seq_labels.txt results/seq_centroids.txt
 
 echo "[verify] parallel run (P=$P${HOSTFILE:+, hostfile=$HOSTFILE})"
-"$MPIRUN" ${EXTRA[@]+"${EXTRA[@]}"} -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
+# KMEANS_PROGRESS=1 draws a live bar on stderr so the run shows motion; labels
+# go to the output files, not stdout, so this doesn't affect the comparison.
+KMEANS_PROGRESS=1 "$MPIRUN" ${EXTRA[@]+"${EXTRA[@]}"} -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
     results/par_labels.txt results/par_centroids.txt
 
 echo "[verify] comparing partitions (up to relabeling)"

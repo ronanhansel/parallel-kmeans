@@ -128,6 +128,17 @@ int main(int argc, char **argv) {
     int iters = 0;
     double final_delta = 0.0;
 
+    /* Opt-in live progress bar. Rank 0 redraws a one-line bar on stderr so a
+     * long run shows motion instead of looking hung. OFF by default and enabled
+     * only when KMEANS_PROGRESS is set to a non-empty, non-"0" value, so it never
+     * pollutes the stdout summary or the SUMMARY-on-stderr line the experiment
+     * scripts parse (those scripts simply don't set the variable). */
+    int show_progress = 0;
+    if (rank == 0) {
+        const char *pe = getenv("KMEANS_PROGRESS");
+        show_progress = (pe && pe[0] != '\0' && pe[0] != '0');
+    }
+
     /* ===================== main iteration loop ========================== */
     for (int it = 0; it < max_iters; it++) {
         iters = it + 1;
@@ -172,8 +183,34 @@ int main(int argc, char **argv) {
         t_compute += MPI_Wtime() - tc;
 
         final_delta = delta;
-        if (delta <= epsilon) break;   /* identical delta on every rank */
+        int converged = (delta <= epsilon);
+
+        /* --- live progress bar (rank 0, opt-in, stderr) ----------------- */
+        /* Drawn after the convergence delta is known so the bar reports the
+         * real iteration count and delta. Uses \r to redraw one line in place;
+         * no trailing newline until the run ends, so the terminal stays tidy.
+         * max_iters is the only hard bound we can show a fraction against —
+         * k-means usually converges earlier, so we also print the live delta
+         * and finish the bar at 100% on convergence. */
+        if (show_progress) {
+            int total = max_iters;
+            int done  = iters;
+            double frac = total > 0 ? (double)done / (double)total : 1.0;
+            if (converged) frac = 1.0;
+            int width = 30;
+            int fill  = (int)(frac * width + 0.5);
+            fprintf(stderr, "\r  [");
+            for (int b = 0; b < width; b++)
+                fputc(b < fill ? '#' : '.', stderr);
+            fprintf(stderr, "] %3.0f%%  iter %d/%d  delta=%.3e",
+                    frac * 100.0, done, total, delta);
+            fflush(stderr);
+        }
+
+        if (converged) break;   /* identical delta on every rank */
     }
+    /* Close the progress line so the summary prints on a fresh row. */
+    if (show_progress) fputc('\n', stderr);
 
     /* ---- Gather final labels back to rank 0 for the correctness check --- */
     int32_t *all_labels = NULL;
