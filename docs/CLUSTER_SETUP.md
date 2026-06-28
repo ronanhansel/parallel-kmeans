@@ -115,11 +115,25 @@ launches `mpirun`), so `ROLE=slave` skips this step.
 
 ## 4. Exchange SSH keys (so every node can reach every node)
 
-MPI's launcher SSHes from the master to each worker. The simplest robust setup
-is **all-to-all** passwordless SSH. On **each** VM, append every *other* VM's
-public key to `~/.ssh/authorized_keys`.
+MPI's launcher SSHes from the master to each worker non-interactively, so it
+needs **key-based** auth — a shared login password is not enough. You push the
+master's public key to each worker once; after that, SSH is keyless.
 
-Easiest path — from the master, copy its key to every node (including itself):
+Easiest path — one command from the master. It reads the `node*` aliases from
+`/etc/hosts` (written in step 3), skips the master itself, and runs `ssh-copy-id`
+for each worker. Because every node shares the same password in the lab setup,
+you just type that password once per worker:
+
+```bash
+NODE_USER=mpiuser scripts/exchange_keys.sh
+```
+
+It verifies passwordless SSH to every worker at the end, so a wrong password or
+unreachable host is caught here instead of mid-demo. You can also pass hosts
+explicitly: `NODE_USER=mpiuser scripts/exchange_keys.sh node1 node2 node3`.
+
+Manual alternative — from the master, copy its key to every node (including
+itself):
 
 ```bash
 # Run on node0. Repeat the IP list for your cluster.
