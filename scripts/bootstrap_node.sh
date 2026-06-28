@@ -29,18 +29,37 @@ if ! command -v apt >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> [1/5] Updating apt and installing packages"
-sudo apt update
+echo "==> [1/6] Checking packages (install only what's missing)"
 # python3-numpy + python3-matplotlib are needed on the master to generate
 # datasets (gen_dataset.py) and render figures (make_plots.py). Installing them
 # on every node is harmless and keeps any node usable as the launcher.
-sudo apt install -y net-tools openssh-server openssh-client make gcc $MPI_PKG \
-    python3 python3-numpy python3-matplotlib
+#
+# Cold start installs missing packages; warm start is a no-op. We never run
+# `apt update` or upgrade already-installed packages — only a missing package
+# triggers a single `apt update` + install of just the gaps, so re-running this
+# script on a provisioned node costs nothing.
+REQUIRED_PKGS=(net-tools openssh-server openssh-client make gcc $MPI_PKG \
+    python3 python3-numpy python3-matplotlib)
 
-echo "==> [2/5] Ensuring SSH server is running"
+missing=()
+for pkg in "${REQUIRED_PKGS[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+        missing+=("$pkg")
+    fi
+done
+
+if [[ ${#missing[@]} -eq 0 ]]; then
+    echo "    all packages already installed, skipping apt"
+else
+    echo "    missing: ${missing[*]}"
+    sudo apt update
+    sudo apt install -y --no-upgrade "${missing[@]}"
+fi
+
+echo "==> [2/6] Ensuring SSH server is running"
 sudo systemctl enable --now ssh 2>/dev/null || sudo service ssh start || true
 
-echo "==> [3/5] Preparing ~/.ssh (mode 700)"
+echo "==> [3/6] Preparing ~/.ssh (mode 700)"
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 touch "$HOME/.ssh/authorized_keys"
