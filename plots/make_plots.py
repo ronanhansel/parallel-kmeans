@@ -229,6 +229,38 @@ def plot_comm_fraction(results_dir):
     return f"wrote {out}"
 
 
+def plot_convergence(results_dir):
+    """WCSS (within-cluster sum of squares = total squared intra-cluster
+    distance) per iteration — the k-means objective. It decreases monotonically
+    and flattening signals convergence. Written by kmeans_mpi when KMEANS_CONV_CSV
+    is set; the demo points it at results/convergence.csv."""
+    path = os.path.join(results_dir, "convergence.csv")
+    if not os.path.isfile(path):
+        return f"skip convergence: {path} not found"
+    rows = read_csv(path)
+    rows = [r for r in rows if r.get("wcss")]
+    if not rows:
+        return "skip convergence: no rows in convergence.csv"
+    rows.sort(key=lambda r: int(r["iter"]))
+    it = [int(r["iter"]) for r in rows]
+    wcss = [float(r["wcss"]) for r in rows]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(it, wcss, "o-", color="#3b78b0")
+    # Log y so the early orders-of-magnitude drop and the late fine-tuning are
+    # both legible (WCSS often falls by 100x in the first few iterations).
+    if min(wcss) > 0:
+        ax.set_yscale("log")
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("WCSS (total squared intra-cluster distance)")
+    ax.set_title(f"K-means convergence: WCSS per iteration "
+                 f"({wcss[0]:.3e} -> {wcss[-1]:.3e} over {len(it)} iters)")
+    ax.grid(True, which="both", alpha=0.3)
+    out = os.path.join(results_dir, "fig_convergence.png")
+    fig.tight_layout(); fig.savefig(out, dpi=130); plt.close(fig)
+    return f"wrote {out} ({len(it)} iters)"
+
+
 def _read_dataset(path):
     """Read the little-endian dataset binary written by gen_dataset.py.
     Returns (M, dim, K, data as a flat float list). numpy used when present."""
@@ -350,15 +382,15 @@ def main():
 
     # Clustering first: it's the actual result. The rest are performance figures.
     print("[plots]", plot_clustering(args.results_dir, args.data))
-    for fn in (plot_size_sweep, plot_granularity, plot_runtime, plot_speedup,
-               plot_efficiency, plot_comm_fraction):
+    for fn in (plot_convergence, plot_size_sweep, plot_granularity, plot_runtime,
+               plot_speedup, plot_efficiency, plot_comm_fraction):
         print("[plots]", fn(args.results_dir))
 
     # Collect every figure that actually exists on disk, in a sensible order
     # (result first), and optionally open them all.
-    figs = ["fig_clustering.png", "fig_size_sweep.png", "fig_granularity.png",
-            "fig_runtime.png", "fig_speedup.png", "fig_efficiency.png",
-            "fig_comm_fraction.png"]
+    figs = ["fig_clustering.png", "fig_convergence.png", "fig_size_sweep.png",
+            "fig_granularity.png", "fig_runtime.png", "fig_speedup.png",
+            "fig_efficiency.png", "fig_comm_fraction.png"]
     present = [os.path.join(args.results_dir, f) for f in figs
                if os.path.isfile(os.path.join(args.results_dir, f))]
     print(f"[plots] {len(present)} figure(s) in {args.results_dir}/:")

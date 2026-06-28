@@ -98,6 +98,21 @@ static inline int nearest_centroid(const double *point, const double *centroids,
     return best;
 }
 
+/* Like nearest_centroid but also returns the squared distance to the chosen
+ * centroid via *out_d2. Summing this over all points gives WCSS (within-cluster
+ * sum of squares) — the k-means objective — for free during assignment. */
+static inline int nearest_centroid_d(const double *point, const double *centroids,
+                                     int K, int dim, double *out_d2) {
+    int best = 0;
+    double best_d = dist2(point, centroids, dim);
+    for (int k = 1; k < K; k++) {
+        double d = dist2(point, centroids + (size_t)k * dim, dim);
+        if (d < best_d) { best_d = d; best = k; }
+    }
+    *out_d2 = best_d;
+    return best;
+}
+
 /* Write final cluster labels (one int per line) for correctness comparison. */
 static inline int write_labels(const char *path, const int32_t *labels, int32_t M) {
     FILE *f = fopen(path, "w");

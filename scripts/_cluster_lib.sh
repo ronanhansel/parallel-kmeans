@@ -27,17 +27,25 @@ CLUSTER_MASTER="${CLUSTER_MASTER:-}"
 
 # Names that refer to THIS machine (hostnames only; IPs are handled separately
 # so a hostname that happens to look like an IP can't slip through).
+# The trailing `|| true` keeps a no-match grep (exit 1) from killing the script
+# under `set -e`/`pipefail` when none of the hostname forms is available.
 _self_names="$( { hostname; hostname -s; hostname -f; } 2>/dev/null \
-    | tr ' ' '\n' | grep -v '^$' | sort -u )"
+    | tr ' ' '\n' | grep -v '^$' | sort -u || true )"
 
 # local_ips : every IPv4 address bound to this machine, one per line. Used to
 # decide whether a host alias/IP points back at us (fork) or at another box (SSH).
+# Sources, in order of preference: `hostname -I` (Linux), `ip` (Linux), then
+# `ifconfig` (macOS / older systems) so this also works off the cluster. The
+# trailing `|| true` stops an empty result's grep (exit 1) from failing `set -e`.
 local_ips() {
     {
         hostname -I 2>/dev/null
-        command -v ip >/dev/null 2>&1 \
-            && ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
-    } | tr ' ' '\n' | grep -vE '^$' | sort -u
+        if command -v ip >/dev/null 2>&1; then
+            ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+        elif command -v ifconfig >/dev/null 2>&1; then
+            ifconfig 2>/dev/null | awk '/inet /{print $2}'
+        fi
+    } | tr ' ' '\n' | grep -vE '^$' | sort -u || true
 }
 _self_ips="$(local_ips)"
 
@@ -123,6 +131,27 @@ mpi_mca_flags() {
     # Disable IPv6 in the TCP BTL (the decisive flag) regardless of iface.
     flags="$flags --mca btl_tcp_disable_family 6"
     echo "$flags"
+}
+
+# mpi_unbuffer_flag : echo "--stream-buffering 0" iff this mpirun accepts it,
+# else nothing. OpenMPI 5.x buffers each rank's stdout/stderr and only flushes at
+# exit, so the live progress bar's \r redraws don't appear until the run ends.
+# This flag forwards them unbuffered. It is OpenMPI-5-specific (older OpenMPI and
+# MPICH reject it), so we probe once (by execution) and cache the answer. Callers
+# use it ONLY when the progress bar is on; never with output they parse.
+_MPI_UNBUFFER_CACHED=""
+mpi_unbuffer_flag() {
+    if [[ -z "$_MPI_UNBUFFER_CACHED" ]]; then
+        # Probe by EXECUTION, not --help: OpenMPI 5.x accepts the flag but hides
+        # it from the default --help (it only shows under `--help all`). A trivial
+        # local run with the flag is the authoritative test — exit 0 = supported.
+        if "${MPIRUN:-mpirun}" --stream-buffering 0 -np 1 true >/dev/null 2>&1; then
+            _MPI_UNBUFFER_CACHED="yes"
+        else
+            _MPI_UNBUFFER_CACHED="no"
+        fi
+    fi
+    [[ "$_MPI_UNBUFFER_CACHED" == "yes" ]] && echo "--stream-buffering 0"
 }
 
 # hosts_from_hostfile <path> : print the host token (first field) of each real

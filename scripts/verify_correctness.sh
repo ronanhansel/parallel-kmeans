@@ -47,6 +47,11 @@ if [[ -n "${HOSTFILE:-}" ]]; then
 fi
 P="${5:-${P:-4}}"
 
+# Without this, OpenMPI 5.x buffers each rank's stderr and flushes only at exit,
+# so the live progress bar appears all at once at the end. The flag is probed
+# (empty if mpirun doesn't support it) so it stays portable. shellcheck disable=SC2206
+EXTRA+=($(mpi_unbuffer_flag))
+
 mkdir -p data results
 
 if [[ ! -f "$DATA" ]]; then
@@ -63,7 +68,10 @@ echo "[verify] sequential run"
 echo "[verify] parallel run (P=$P${HOSTFILE:+, hostfile=$HOSTFILE})"
 # KMEANS_PROGRESS=1 draws a live bar on stderr so the run shows motion; labels
 # go to the output files, not stdout, so this doesn't affect the comparison.
-KMEANS_PROGRESS=1 "$MPIRUN" ${EXTRA[@]+"${EXTRA[@]}"} -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
+# KMEANS_CONV_CSV records WCSS (intra-cluster distance) per iteration for the
+# convergence figure.
+KMEANS_PROGRESS=1 KMEANS_CONV_CSV=results/convergence.csv \
+    "$MPIRUN" ${EXTRA[@]+"${EXTRA[@]}"} -np "$P" ./bin/kmeans_mpi "$DATA" "$K" "$ITERS" "$EPS" \
     results/par_labels.txt results/par_centroids.txt
 
 echo "[verify] comparing partitions (up to relabeling)"

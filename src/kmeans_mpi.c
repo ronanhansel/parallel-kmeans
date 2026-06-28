@@ -139,18 +139,31 @@ int main(int argc, char **argv) {
         show_progress = (pe && pe[0] != '\0' && pe[0] != '0');
     }
 
+    /* Per-iteration WCSS (within-cluster sum of squares = the k-means objective,
+     * i.e. total squared intra-cluster distance). Rank 0 keeps the history so it
+     * can write a convergence CSV when KMEANS_CONV_CSV names a path. The CSV lets
+     * make_plots.py draw WCSS-vs-iteration, the textbook convergence curve. */
+    const char *conv_csv = (rank == 0) ? getenv("KMEANS_CONV_CSV") : NULL;
+    if (conv_csv && conv_csv[0] == '\0') conv_csv = NULL;
+    double *wcss_hist = (rank == 0) ? malloc((size_t)max_iters * sizeof(double)) : NULL;
+
     /* ===================== main iteration loop ========================== */
     for (int it = 0; it < max_iters; it++) {
         iters = it + 1;
 
         /* --- compute: assign points and tally local sums/counts --------- */
+        /* WCSS is summed here for free: nearest_centroid_d hands back the squared
+         * distance to the chosen centroid, so no extra distance passes. */
         double tc = MPI_Wtime();
         memset(local_sum, 0, (size_t)K * dim * sizeof(double));
         for (int k = 0; k < K; k++) local_cnt[k] = 0;
 
+        double local_wcss = 0.0;
         for (int i = 0; i < local_M; i++) {
             const double *p = local + (size_t)i * dim;
-            int c = nearest_centroid(p, centroids, K, dim);
+            double d2;
+            int c = nearest_centroid_d(p, centroids, K, dim, &d2);
+            local_wcss += d2;
             local_lab[i] = c;
             double *acc = local_sum + (size_t)c * dim;
             for (int d = 0; d < dim; d++) acc[d] += p[d];
@@ -164,7 +177,13 @@ int main(int argc, char **argv) {
                       MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(local_cnt, global_cnt, K, MPI_LONG,
                       MPI_SUM, MPI_COMM_WORLD);
+        /* WCSS for this iteration, reduced to rank 0 (only it logs/plots it). */
+        double global_wcss = 0.0;
+        MPI_Reduce(&local_wcss, &global_wcss, 1, MPI_DOUBLE, MPI_SUM,
+                   0, MPI_COMM_WORLD);
         t_comm += MPI_Wtime() - tb;
+
+        if (rank == 0 && wcss_hist) wcss_hist[it] = global_wcss;
 
         /* --- compute: recompute centroids + convergence delta ----------- */
         tc = MPI_Wtime();
@@ -191,7 +210,11 @@ int main(int argc, char **argv) {
          * no trailing newline until the run ends, so the terminal stays tidy.
          * max_iters is the only hard bound we can show a fraction against —
          * k-means usually converges earlier, so we also print the live delta
-         * and finish the bar at 100% on convergence. */
+         * and WCSS, and finish the bar at 100% on convergence.
+         *
+         * NOTE: OpenMPI buffers each rank's stderr and flushes at exit, so the
+         * redraws only appear live when mpirun is given --stream-buffering 0
+         * (the cluster scripts pass it when the bar is on). */
         if (show_progress) {
             int total = max_iters;
             int done  = iters;
@@ -202,8 +225,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "\r  [");
             for (int b = 0; b < width; b++)
                 fputc(b < fill ? '#' : '.', stderr);
-            fprintf(stderr, "] %3.0f%%  iter %d/%d  delta=%.3e",
-                    frac * 100.0, done, total, delta);
+            fprintf(stderr, "] %3.0f%%  iter %d/%d  delta=%.3e  WCSS=%.4e",
+                    frac * 100.0, done, total, delta, global_wcss);
             fflush(stderr);
         }
 
@@ -211,6 +234,21 @@ int main(int argc, char **argv) {
     }
     /* Close the progress line so the summary prints on a fresh row. */
     if (show_progress) fputc('\n', stderr);
+
+    /* Write the WCSS convergence history (rank 0, opt-in via KMEANS_CONV_CSV). */
+    if (rank == 0 && conv_csv && wcss_hist) {
+        FILE *cf = fopen(conv_csv, "w");
+        if (cf) {
+            fprintf(cf, "iter,wcss\n");
+            for (int it = 0; it < iters; it++)
+                fprintf(cf, "%d,%.10g\n", it + 1, wcss_hist[it]);
+            fclose(cf);
+        } else {
+            fprintf(stderr, "kmeans_mpi: WARN: could not write conv CSV '%s'\n",
+                    conv_csv);
+        }
+    }
+    free(wcss_hist);
 
     /* ---- Gather final labels back to rank 0 for the correctness check --- */
     int32_t *all_labels = NULL;

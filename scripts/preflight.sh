@@ -36,6 +36,10 @@ TOTAL="$(total_slots_from_hostfile "$HOSTFILE")"
 EXTRA=(--hostfile "$HOSTFILE")
 # shellcheck disable=SC2046
 EXTRA+=($(mpi_mca_flags))
+# Stream each rank's stderr live (OpenMPI 5.x buffers to exit otherwise) so the
+# stage-5 progress bar shows motion. Probed, so it's a no-op on MPIs without it.
+# shellcheck disable=SC2046
+EXTRA+=($(mpi_unbuffer_flag))
 
 echo "[preflight] hostfile '$HOSTFILE': ${#HOSTS[@]} node(s), $TOTAL total slots"
 if [[ ${#HOSTS[@]} -lt 3 ]]; then
