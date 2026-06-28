@@ -57,6 +57,33 @@ int main(int argc, char **argv) {
     double t_compute = 0.0, t_comm = 0.0, t_io = 0.0;
     double t_wall_start = MPI_Wtime();
 
+    /* Opt-in verbose progress (rank 0, stderr). Detected HERE — before the
+     * dataset read and the Scatterv — so the setup phase is narrated too, not
+     * just the iteration loop. Enabled when KMEANS_PROGRESS is set to a
+     * non-empty, non-"0" value; off by default so it never pollutes the stdout
+     * summary or the SUMMARY-on-stderr line the experiment scripts parse.
+     *
+     * Note on startup cost: on a real cluster the dominant delay before the
+     * first milestone below is mpirun's launch/wireup (SSH spawn + TCP connect
+     * inside MPI_Init), which runs before any of this code. We can't print
+     * during it, but PROG("MPI ready") landing late vs the rest landing fast
+     * tells you the time is launch, not our work. */
+    int show_progress = 0;
+    if (rank == 0) {
+        const char *pe = getenv("KMEANS_PROGRESS");
+        show_progress = (pe && pe[0] != '\0' && pe[0] != '0');
+    }
+    /* PROG(msg): timestamped milestone from rank 0 when progress is on. The
+     * leading \n closes any in-place bar line; flush so it appears immediately. */
+#define PROG(...) do { \
+    if (show_progress) { \
+        fprintf(stderr, "[kmeans] %6.3fs  ", MPI_Wtime() - t_wall_start); \
+        fprintf(stderr, __VA_ARGS__); \
+        fputc('\n', stderr); fflush(stderr); \
+    } } while (0)
+
+    PROG("MPI ready: P=%d ranks wired up; reading dataset '%s'", P, data_path);
+
     /* ---- Rank 0 reads the dataset, then broadcasts the shape ------------- */
     Dataset ds = {0};
     int32_t shape[3] = {0, 0, 0};   /* M, dim, K_ground (K from argv wins) */
@@ -84,6 +111,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, 3);
     }
 
+    PROG("dataset loaded: M=%d points, dim=%d, K=%d (read %.3fs); scattering rows",
+         M, dim, K, t_io);
+
     /* ---- 1D block-row mapping: counts + displacements for Scatterv ------- */
     int *row_counts = malloc((size_t)P * sizeof(int));  /* points per rank   */
     int *row_displs = malloc((size_t)P * sizeof(int));  /* point offset      */
@@ -110,6 +140,9 @@ int main(int argc, char **argv) {
                  local, local_M * dim, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     t_comm += MPI_Wtime() - tb;
 
+    PROG("rows scattered: this rank owns %d points; seeding %d centroids",
+         local_M, K);
+
     /* ---- Initial centroids: first K points, seeded on rank 0 then Bcast - */
     double *centroids     = malloc((size_t)K * dim * sizeof(double));
     if (rank == 0)
@@ -127,17 +160,6 @@ int main(int argc, char **argv) {
 
     int iters = 0;
     double final_delta = 0.0;
-
-    /* Opt-in live progress bar. Rank 0 redraws a one-line bar on stderr so a
-     * long run shows motion instead of looking hung. OFF by default and enabled
-     * only when KMEANS_PROGRESS is set to a non-empty, non-"0" value, so it never
-     * pollutes the stdout summary or the SUMMARY-on-stderr line the experiment
-     * scripts parse (those scripts simply don't set the variable). */
-    int show_progress = 0;
-    if (rank == 0) {
-        const char *pe = getenv("KMEANS_PROGRESS");
-        show_progress = (pe && pe[0] != '\0' && pe[0] != '0');
-    }
 
     /* Per-iteration WCSS (within-cluster sum of squares = the k-means objective,
      * i.e. total squared intra-cluster distance). Rank 0 keeps the history so it
