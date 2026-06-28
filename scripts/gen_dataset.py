@@ -29,6 +29,7 @@ the large experiment sizes installing numpy is recommended
 (`sudo apt install -y python3-numpy`).
 """
 import argparse
+import os
 import struct
 import sys
 
@@ -124,6 +125,13 @@ def main() -> int:
         data_bytes, label_bytes = _gen_stdlib(
             args.M, args.dim, args.K, args.seed, args.spread, args.box)
         backend = "stdlib"
+
+    # Create the output directory if it doesn't exist yet. On a freshly synced
+    # worker (or any node where the demo runs before data/ is created), the
+    # parent dir may be absent — make it rather than crashing with ENOENT.
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     with open(args.out, "wb") as f:
         f.write(struct.pack("<3i", args.M, args.dim, args.K))
