@@ -83,6 +83,30 @@ passphrase-less RSA key if missing, and prints the VM's **LAN IP** and its
 **public key**. Write down each IP. (Every node must use the same MPI
 implementation; preflight checks this.)
 
+The script only installs packages that are actually **missing**, so re-running
+it on an already-provisioned VM is a fast no-op — it never runs `apt update` or
+upgrades anything when nothing is needed.
+
+On the **master**, the script also sets up the `node0`/`node1`/… aliases in
+`/etc/hosts` for you. If they aren't configured yet it prompts for the LAN IP of
+every node, **master first**, space-separated:
+
+```
+IPs: 192.168.1.50 192.168.1.51 192.168.1.52
+```
+
+The **number of IPs you enter sets the cluster size** — `node0` is the master,
+then `node1`, `node2`, and so on. To skip the prompt (e.g. for scripted setup),
+pass them via `NODE_IPS`:
+
+```bash
+ROLE=master NODE_IPS="192.168.1.50 192.168.1.51 192.168.1.52" scripts/bootstrap_node.sh
+```
+
+Re-running is safe: if the aliases already exist the script prints them and
+leaves `/etc/hosts` untouched. Workers don't need the aliases (only the master
+launches `mpirun`), so `ROLE=slave` skips this step.
+
 > **Why passphrase-less keys?** `mpirun` opens SSH sessions to the workers
 > non-interactively; it cannot type a password. This is standard for an isolated
 > lab cluster on a private hotspot. Do not reuse these keys outside the lab.
@@ -112,7 +136,9 @@ every other machine's `~/.ssh/authorized_keys`, then:
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-Make the hostnames resolvable on every VM by adding them to `/etc/hosts`:
+The `node0`/`node1`/… aliases were already written to `/etc/hosts` on the master
+by the bootstrap script (step 3). If you're setting up by hand or want them on a
+worker too, add them there:
 
 ```bash
 sudo tee -a /etc/hosts >/dev/null <<'EOF'

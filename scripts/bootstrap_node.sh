@@ -2,14 +2,22 @@
 # Bootstrap an Ubuntu VM into a cluster-ready MPI node.
 #
 # Reproduces the manual steps from the assignment video, automated:
-#   - update apt, install net-tools, openssh-server/client, make, MPI toolchain
+#   - install net-tools, openssh-server/client, make, MPI toolchain (only the
+#     packages that are actually missing; a fully provisioned node is a no-op)
 #   - prepare ~/.ssh with mode 700
 #   - generate a passphrase-less RSA key if one does not exist
+#   - (master only) set node0/node1/... aliases in /etc/hosts, prompting for the
+#     LAN IPs when they aren't configured yet
 #   - print this node's LAN IP and public key for the key-exchange step
 #
 # Run on EVERY VM. Pass the role for clarity in the output:
 #   ROLE=master scripts/bootstrap_node.sh
 #   ROLE=slave  scripts/bootstrap_node.sh
+#
+# The cluster size is NOT fixed: on the master, the number of IPs you enter (or
+# pass via NODE_IPS) sets how many node aliases are written (node0=master,
+# node1, node2, ...). Non-interactive example:
+#   ROLE=master NODE_IPS="192.168.1.50 192.168.1.51 192.168.1.52" scripts/bootstrap_node.sh
 #
 # Passphrase-less keys are required because mpirun logs in to workers
 # non-interactively. This is appropriate for an isolated lab cluster on a private
@@ -29,7 +37,7 @@ if ! command -v apt >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> [1/6] Checking packages (install only what's missing)"
+echo "==> [1/7] Checking packages (install only what's missing)"
 # python3-numpy + python3-matplotlib are needed on the master to generate
 # datasets (gen_dataset.py) and render figures (make_plots.py). Installing them
 # on every node is harmless and keeps any node usable as the launcher.
@@ -56,16 +64,16 @@ else
     sudo apt install -y --no-upgrade "${missing[@]}"
 fi
 
-echo "==> [2/6] Ensuring SSH server is running"
+echo "==> [2/7] Ensuring SSH server is running"
 sudo systemctl enable --now ssh 2>/dev/null || sudo service ssh start || true
 
-echo "==> [3/6] Preparing ~/.ssh (mode 700)"
+echo "==> [3/7] Preparing ~/.ssh (mode 700)"
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 touch "$HOME/.ssh/authorized_keys"
 chmod 600 "$HOME/.ssh/authorized_keys"
 
-echo "==> [4/6] Generating passphrase-less RSA key (if absent)"
+echo "==> [4/7] Generating passphrase-less RSA key (if absent)"
 if [[ ! -f "$HOME/.ssh/id_rsa" ]]; then
     ssh-keygen -t rsa -b 4096 -N "" -f "$HOME/.ssh/id_rsa"
     echo "    generated ~/.ssh/id_rsa"
@@ -73,22 +81,77 @@ else
     echo "    key already exists, leaving it untouched"
 fi
 
+# The master must resolve node0/node1/... to launch mpirun across the cluster.
+# These live in /etc/hosts. We only write them when they aren't already set, so
+# re-running is a no-op; the cluster size comes from however many IPs are given.
+echo "==> [5/7] Node aliases in /etc/hosts (node0=master, node1, node2, ...)"
+HOSTS_FILE="/etc/hosts"
+HOSTS_BEGIN="# >>> kmeans-cluster >>>"
+HOSTS_END="# <<< kmeans-cluster <<<"
+if grep -qF "$HOSTS_BEGIN" "$HOSTS_FILE"; then
+    echo "    aliases already set, leaving /etc/hosts untouched:"
+    awk -v b="$HOSTS_BEGIN" -v e="$HOSTS_END" \
+        '$0==b{f=1;next} $0==e{f=0} f' "$HOSTS_FILE" | sed 's/^/      /'
+elif [[ "$ROLE" != "master" ]]; then
+    echo "    not master and no aliases set; skipping"
+    echo "    (workers don't need the aliases — only the master launches mpirun)"
+else
+    ips="${NODE_IPS:-}"
+    if [[ -z "$ips" ]]; then
+        echo "    No kmeans-cluster aliases found in /etc/hosts."
+        echo "    Enter the LAN IP of EVERY node, MASTER FIRST, space-separated."
+        echo "    Example: 192.168.1.50 192.168.1.51 192.168.1.52"
+        echo "    The number of IPs sets the cluster size (node0=master, node1, ...)."
+        read -rp "    IPs: " ips
+    fi
+    # Split on whitespace and commas, drop blanks, validate IPv4.
+    IFS=', ' read -ra _raw_ips <<< "$ips"
+    entries=()
+    idx=0
+    for ip in "${_raw_ips[@]}"; do
+        ip="$(echo "$ip" | tr -d '[:space:]')"
+        [[ -z "$ip" ]] && continue
+        if [[ ! "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "    ERROR: '$ip' is not a valid IPv4 address." >&2
+            exit 1
+        fi
+        entries+=("$ip  node$idx")
+        idx=$((idx + 1))
+    done
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        echo "    ERROR: no IPs provided; cannot configure node aliases." >&2
+        exit 1
+    fi
+    {
+        printf '%s\n' "$HOSTS_BEGIN"
+        printf '%s\n' "${entries[@]}"
+        printf '%s\n' "$HOSTS_END"
+    } | sudo tee -a "$HOSTS_FILE" >/dev/null
+    echo "    wrote ${#entries[@]} node alias(es) to /etc/hosts:"
+    printf '      %s\n' "${entries[@]}"
+fi
+
 # For an isolated lab cluster on a private hotspot, VM IPs and host keys change
 # across reboots/rebuilds, which makes SSH throw "Host key verification failed"
 # and breaks mpirun's non-interactive worker launch. Relax host-key checking for
 # the cluster's private subnet + node aliases so the launcher never gets stuck on
 # a stale key. This block is idempotent (only added once).
-echo "==> [5/6] Relaxing SSH host-key checks for the lab subnet (idempotent)"
+echo "==> [6/7] Relaxing SSH host-key checks for the lab subnet (idempotent)"
 SSH_CFG="$HOME/.ssh/config"
 touch "$SSH_CFG"; chmod 600 "$SSH_CFG"
 if ! grep -q '# >>> kmeans-cluster >>>' "$SSH_CFG"; then
-    cat >> "$SSH_CFG" <<'CFG'
+    # Generate a generous range of node aliases so any reasonable cluster size is
+    # covered without re-editing this file; IP connections match the subnet
+    # wildcards regardless of name.
+    NODE_ALIASES=""
+    for i in $(seq 0 15); do NODE_ALIASES+="node$i "; done
+    cat >> "$SSH_CFG" <<CFG
 
 # >>> kmeans-cluster >>>
 # Isolated lab cluster on a private LAN. Disable host-key prompts so mpirun can
 # SSH to workers non-interactively even after VM rebuilds / DHCP IP churn.
 # Do NOT use these settings on machines exposed to the internet.
-Host 10.* 172.16.* 172.17.* 172.18.* 172.19.* 172.2*.* 172.3*.* 192.168.* node0 node1 node2 node3
+Host 10.* 172.16.* 172.17.* 172.18.* 172.19.* 172.2*.* 172.3*.* 192.168.* ${NODE_ALIASES}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     LogLevel ERROR
@@ -99,7 +162,7 @@ else
     echo "    kmeans-cluster block already present, leaving it"
 fi
 
-echo "==> [6/6] Node identity (record these for the key-exchange step)"
+echo "==> [7/7] Node identity (record these for the key-exchange step)"
 echo "----------------------------------------------------------------"
 echo "Hostname : $(hostname)"
 echo -n "LAN IP   : "
