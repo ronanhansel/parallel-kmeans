@@ -64,6 +64,26 @@ export HOSTFILE
 
 say() { printf '\n========== %s ==========\n' "$*"; }
 
+# --- NODES default from /etc/hosts -----------------------------------------
+# The master's bootstrap (bootstrap_node.sh step 5) writes the cluster's node
+# aliases into /etc/hosts inside a marked block, master first:
+#   # >>> kmeans-cluster >>>
+#   192.168.1.50  node0
+#   192.168.1.51  node1
+#   ...
+#   # <<< kmeans-cluster <<<
+# If NODES wasn't passed, recover it from that block so a first run doesn't make
+# you retype the list. We use the node* aliases (in file order = rank order);
+# node0 is the master and is treated as local. Empty if the block is absent.
+if [[ -z "${NODES:-}" ]]; then
+    NODES="$(awk '
+        /# >>> kmeans-cluster >>>/{f=1; next}
+        /# <<< kmeans-cluster <<</{f=0}
+        f && $2 ~ /^node[0-9]+$/ {print $2}
+    ' /etc/hosts 2>/dev/null | paste -sd' ' -)"
+    [[ -n "$NODES" ]] && echo "[demo] NODES not set; using /etc/hosts aliases: $NODES"
+fi
+
 # --- 0. hostfile ------------------------------------------------------------
 # Decide whether to (re)build the hostfile. Rebuild when:
 #   - FRESH=1 is set, or
@@ -86,8 +106,11 @@ fi
 
 if [[ -n "$need_build" ]]; then
     [[ -n "${NODES:-}" ]] || {
-        echo "[demo] No hostfile and NODES unset. First run needs e.g.:" >&2
-        echo "       NODES=\"node0 node1 node2\" NODE_USER=mpi scripts/run_demo.sh" >&2
+        echo "[demo] No hostfile and NODES unset, and no kmeans-cluster aliases" >&2
+        echo "       found in /etc/hosts. Either run the master bootstrap first:" >&2
+        echo "         ROLE=master scripts/bootstrap_node.sh   # writes node aliases" >&2
+        echo "       or pass the nodes explicitly:" >&2
+        echo "         NODES=\"node0 node1 node2\" NODE_USER=mpi scripts/run_demo.sh" >&2
         exit 1; }
     say "0/7  build hostfile from: $NODES"
     # shellcheck disable=SC2086
