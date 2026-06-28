@@ -140,7 +140,16 @@ scripts/verify_correctness.sh
 
 if [[ -n "${QUICK:-}" ]]; then
     say "QUICK mode: cluster proven (topology + correctness). Stopping before experiments."
-    echo "[demo] artifacts: results/cluster_hostname.txt, results/{seq,par}_labels.txt"
+    # The clustering RESULT figure only needs the dataset + the parallel labels
+    # that verify_correctness.sh just produced — no experiment CSVs required — so
+    # render and show it even in QUICK mode. OPEN=0 suppresses opening (headless).
+    if python3 -c 'import matplotlib' 2>/dev/null; then
+        OPEN_FLAG=""; [[ "${OPEN:-1}" != "0" ]] && OPEN_FLAG="--open"
+        python3 plots/make_plots.py $OPEN_FLAG || true
+    else
+        echo "[demo] (matplotlib absent — skipping the result figure)" >&2
+    fi
+    echo "[demo] artifacts: results/cluster_hostname.txt, results/{seq,par}_labels.txt, results/fig_clustering.png"
     exit 0
 fi
 
@@ -181,7 +190,10 @@ N="$N" MAXP="$TOTAL" scripts/run_scaling.sh
 # demo over a figure step — report it and let the user render later.
 say "7/7  render figures"
 if python3 -c 'import matplotlib' 2>/dev/null; then
-    python3 plots/make_plots.py
+    # OPEN=0 suppresses opening the images (e.g. a headless cluster node);
+    # default is to open every figure in the OS image viewer after rendering.
+    OPEN_FLAG=""; [[ "${OPEN:-1}" != "0" ]] && OPEN_FLAG="--open"
+    python3 plots/make_plots.py $OPEN_FLAG
 else
     echo "[demo] WARN: matplotlib not installed — skipping figures." >&2
     echo "[demo]       CSVs are saved in results/. To draw the figures later:" >&2
@@ -194,6 +206,7 @@ cat <<EOF
 [demo] evidence:
   results/cluster_hostname.txt   per-node rank topology (>=3 machines)
   results/{seq,par}_labels.txt   correctness PASS (parallel == sequential)
+  results/fig_clustering.png     the k-means RESULT (points coloured by cluster)
   results/size_sweep.csv         runtime vs size  -> results/fig_size_sweep.png
   results/granularity.csv        load balance     -> results/fig_granularity.png
   results/scaling.csv            speedup ladder    -> results/fig_speedup.png, fig_runtime.png
