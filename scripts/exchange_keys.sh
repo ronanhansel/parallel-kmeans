@@ -52,9 +52,9 @@ else
         exit 1; }
 fi
 
-# The first host is the master (rank 0) — this very machine. It is local and is
-# never SSHed to, so we skip it when copying keys.
-CLUSTER_MASTER="${HOSTS[0]}"
+# Which listed host is THIS machine is detected by identity (is_local), so the
+# master is skipped no matter where it sits in the list — we never copy a key to
+# ourselves.
 
 echo "[keys] master public key: $PUBKEY"
 echo "[keys] login user: ${CLUSTER_USER:-<current user>}"

@@ -2,10 +2,16 @@
 # Shared helpers for the cluster orchestration scripts (make_hostfile, sync_nodes,
 # preflight). Sourced, not executed.
 #
-# The key idea: the MASTER (rank 0) is whatever machine these scripts run on, and
+# The key idea: the MASTER (rank 0) is whichever listed host IS this machine, and
 # it must NOT SSH to itself. mpirun launches the local rank by fork, not SSH, and
 # a master typically has no passwordless SSH to its own name. So every per-node
 # action checks is_local() first and runs locally for the master, SSH otherwise.
+#
+# Locality is detected purely by IDENTITY (hostname + bound IPs, and resolving
+# each alias back to an IP), NOT by argument order. That way the same hostfile is
+# correct no matter which node launches, and a misconfigured alias (e.g. 'node1'
+# pointed at the master's IP) is exposed by the callers instead of silently
+# building a cluster of clones.
 #
 # Callers set NODE_USER (bare username, no @) before sourcing; we normalise it.
 
@@ -13,16 +19,27 @@
 CLUSTER_USER="${NODE_USER:-}"
 SSH_USER="${CLUSTER_USER:+${CLUSTER_USER}@}"
 
-# The master (rank 0). Callers set this to the FIRST host before using is_local.
-# By the documented convention the first host IS the machine these scripts run
-# on, so it is treated as local unconditionally — no name resolution, no SSH.
-# This is the authoritative signal; the resolution checks below are only a
-# fallback for hosts that aren't the designated master.
+# CLUSTER_MASTER is kept only for backward compatibility (some callers still set
+# it). It is NO LONGER used to force locality: which host is "local" is detected
+# purely by identity now (see is_local), so the topology is correct no matter
+# which node you launch from, and a misconfigured alias is exposed not masked.
 CLUSTER_MASTER="${CLUSTER_MASTER:-}"
 
-# All names/addresses that refer to THIS machine: hostnames + every local IP.
-_self_id="$( { hostname; hostname -s; hostname -f; hostname -I; } 2>/dev/null \
+# Names that refer to THIS machine (hostnames only; IPs are handled separately
+# so a hostname that happens to look like an IP can't slip through).
+_self_names="$( { hostname; hostname -s; hostname -f; } 2>/dev/null \
     | tr ' ' '\n' | grep -v '^$' | sort -u )"
+
+# local_ips : every IPv4 address bound to this machine, one per line. Used to
+# decide whether a host alias/IP points back at us (fork) or at another box (SSH).
+local_ips() {
+    {
+        hostname -I 2>/dev/null
+        command -v ip >/dev/null 2>&1 \
+            && ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    } | tr ' ' '\n' | grep -vE '^$' | sort -u
+}
+_self_ips="$(local_ips)"
 
 # _resolve <host> : print the IPv4 addresses <host> resolves to, one per line
 # (empty if it can't be resolved). Tries getent (Linux) then a Python fallback
@@ -41,19 +58,21 @@ PY
     fi
 }
 
-# is_local <host> : true if <host> names the machine we're running on. The
-# designated master (CLUSTER_MASTER, the first host) is local by definition.
-# Otherwise match by literal name/IP, then by resolving <host> to an IP and
-# checking it against this machine's IPs — so an alias that points here is caught.
+# is_local <host> : true if <host> names the machine we're running on. This is
+# decided ENTIRELY by identity — no "first host is master" assumption — so the
+# same hostfile gives the correct topology regardless of which node launches it.
+# Match order: loopback, our own hostnames, our own IPs (literal), then resolve
+# <host> to its IP(s) and check those against our IPs (catches an alias like
+# 'node1' that points back here). If none match, the host is remote.
 is_local() {
-    [[ -n "$CLUSTER_MASTER" && "$1" == "$CLUSTER_MASTER" ]] && return 0
     case "$1" in
-        localhost|127.0.0.1|"$(hostname)") return 0 ;;
+        localhost|127.0.0.1|::1) return 0 ;;
     esac
-    grep -qxF "$1" <<<"$_self_id" && return 0
+    grep -qxF "$1" <<<"$_self_names" && return 0
+    grep -qxF "$1" <<<"$_self_ips"   && return 0
     local ip
     while IFS= read -r ip; do
-        [[ -n "$ip" ]] && grep -qxF "$ip" <<<"$_self_id" && return 0
+        [[ -n "$ip" ]] && grep -qxF "$ip" <<<"$_self_ips" && return 0
     done < <(_resolve "$1")
     return 1
 }

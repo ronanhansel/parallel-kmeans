@@ -26,8 +26,8 @@ MPIRUN="${MPIRUN:-mpirun}"
 [[ -f "$HOSTFILE" ]] || { echo "[preflight] FAIL: no hostfile '$HOSTFILE'." >&2; exit 1; }
 
 mapfile -t HOSTS < <(hosts_from_hostfile "$HOSTFILE")
-# First hostfile entry is the master (rank 0) — the machine running this script.
-CLUSTER_MASTER="${HOSTS[0]}"
+# Which host is local (the master, checked locally not over SSH) is decided
+# per-host by is_local() in _cluster_lib.sh — by identity, not list position.
 TOTAL="$(total_slots_from_hostfile "$HOSTFILE")"
 [[ "${TOTAL:-0}" -ge 1 ]] || { echo "[preflight] FAIL: could not total slots from '$HOSTFILE'." >&2; exit 1; }
 
